@@ -77,7 +77,7 @@ class PatchMamba(nn.Module):
             x = x + layer(x)
         return x
 
-class CMambaBlock(nn.Module):
+class SSM_HIPPOBlock(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
@@ -91,7 +91,7 @@ class CMambaBlock(nn.Module):
         x = x * attn.permute(0, 2, 1)
         return self.norm(x)
 
-class CMamba(nn.Module):
+class SSM_HIPPO(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
@@ -99,7 +99,7 @@ class CMamba(nn.Module):
         self.patch_embedding = nn.Linear(args.patch_len * args.num_channels, args.d_model)
         self.pos_encoding = nn.Parameter(torch.randn(1, args.num_patches, args.d_model))
         
-        self.c_mamba_blocks = nn.ModuleList([CMambaBlock(args) for _ in range(args.n_layer)])
+        self.ssm_hippo_blocks = nn.ModuleList([SSM_HIPPOBlock(args) for _ in range(args.n_layer)])
         
         self.norm_f = RMSNorm(args.d_model)
         self.output_layer = nn.Linear(args.d_model * args.num_patches, args.num_channels * args.forecast_len)
@@ -132,10 +132,10 @@ class CMamba(nn.Module):
         # Add positional encoding
         x = x + pos_encoding
         print("after positional encoding", x.shape) if self.args.v else None
-        # Apply C-Mamba blocks
-        for block in self.c_mamba_blocks:
+        # Apply SSM_HIPPO blocks
+        for block in self.ssm_hippo_blocks:
             x = block(x)
-        print("after C-Mamba blocks", x.shape) if self.args.v else None
+        print("after SSM_HIPPO blocks", x.shape) if self.args.v else None
         x = self.norm_f(x)
         print("after norm_f", x.shape) if self.args.v else None
         # Output layer
@@ -288,7 +288,7 @@ if __name__ == "__main__":
         reduction_ratio=4,     # Reduction ratio for channel attention
         verbose=False
     )
-    model = CMamba(args)
+    model = SSM_HIPPO(args)
     print(model)
     # Example input
     x = torch.randn(32, args.num_channels, args.seq_len)
