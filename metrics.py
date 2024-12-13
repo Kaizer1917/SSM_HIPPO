@@ -3,8 +3,9 @@
 import math
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, mean_absolute_percentage_error
 from functools import partial
+import numpy as np
 
 def _student_t_map(mu, sigma, nu):
     sigma = F.softplus(sigma)
@@ -172,6 +173,27 @@ def bpb(x, y, loss_fn):
 def ppl(x, y, loss_fn):
     return torch.exp(loss_fn(x, y))
 
+def forecast_mae(outs, y):
+    """Mean Absolute Error specifically for forecasting tasks."""
+    return F.l1_loss(outs, y, reduction='mean')
+
+def forecast_mape(outs, y):
+    """Mean Absolute Percentage Error for forecasting tasks."""
+    # Convert to numpy for sklearn compatibility
+    outs_np = outs.detach().cpu().numpy()
+    y_np = y.detach().cpu().numpy()
+    return mean_absolute_percentage_error(y_np, outs_np)
+
+def forecast_smape(outs, y):
+    """Symmetric Mean Absolute Percentage Error."""
+    return (200 * torch.abs(outs - y) / (torch.abs(outs) + torch.abs(y))).mean()
+
+def directional_accuracy(outs, y):
+    """Measures accuracy of predicted direction of change."""
+    outs_diff = outs[:, 1:] - outs[:, :-1]
+    y_diff = y[:, 1:] - y[:, :-1]
+    correct_direction = torch.sign(outs_diff) == torch.sign(y_diff)
+    return correct_direction.float().mean()
 
 # Should be a better way to do this
 output_metric_fns = {
@@ -194,6 +216,10 @@ output_metric_fns = {
     "soft_cross_entropy": soft_cross_entropy,  # only for pytorch 1.10+
     "student_t": student_t_loss,
     "gaussian_ll": gaussian_ll_loss,
+    "forecast_mae": forecast_mae,
+    "forecast_mape": forecast_mape,
+    "forecast_smape": forecast_smape,
+    "directional_accuracy": directional_accuracy,
 }
 
 try:
