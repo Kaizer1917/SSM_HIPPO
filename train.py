@@ -120,7 +120,7 @@ def train(args):
     wandb.finish()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Training script for the C-Mamba model.")
+    parser = argparse.ArgumentParser(description="Training script for the SSM_HIPPO model.")
     parser.add_argument('--train_dataset', type=str, default="cMamba-project", help='The training dataset.')
     parser.add_argument('--test_dataset', type=str, default="cMamba-project", help='The test dataset.')
     parser.add_argument('--project_name', type=str, default="cMamba-project", help='WandB project name.')
