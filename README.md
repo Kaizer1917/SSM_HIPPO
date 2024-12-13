@@ -74,7 +74,7 @@ The training script performs the following steps:
 
 #### Usage
 
-To use the training script, save it as train_c_mamba.py and run it from the command line with the appropriate arguments. Here are the arguments you need to provide:
+To use the training script, save it as train_ssm_hippo.py and run it from the command line with the appropriate arguments. Here are the arguments you need to provide:
 
 - `--train_dataset`: Path to the training dataset (NPZ format).
 - `--test_dataset`: Path to the test dataset (NPZ format).
