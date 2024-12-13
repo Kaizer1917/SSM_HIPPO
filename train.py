@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from mamba import CMamba, ModelArgs
+from mamba import SSM_Hippo, ModelArgs
 import matplotlib.pyplot as plt
 import wandb
 
@@ -16,7 +16,7 @@ def train(args):
     wandb.config.update(vars(args))
 
     # Initialize the model, loss function, and optimizer
-    model = CMamba(args)
+    model = SSMHippo(args)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
@@ -99,7 +99,7 @@ def train(args):
         wandb.log({"val_loss": val_loss, "epoch": epoch + 1})
 
         if (epoch + 1) % 5 == 0:
-            model_path = f'c_mamba_model_epoch_{epoch+1}.pth'
+            model_path = f'ssm_hippo_model_epoch_{epoch+1}.pth'
             torch.save(model.state_dict(), model_path)
             wandb.save(model_path)
 
@@ -114,16 +114,16 @@ def train(args):
     plt.show()
 
     # Save final model
-    final_model_path = 'c_mamba_model_final.pth'
+    final_model_path = 'ssm_hippo_model_final.pth'
     torch.save(model.state_dict(), final_model_path)
     wandb.save(final_model_path)
     wandb.finish()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Training script for the SSM_HIPPO model.")
-    parser.add_argument('--train_dataset', type=str, default="cMamba-project", help='The training dataset.')
-    parser.add_argument('--test_dataset', type=str, default="cMamba-project", help='The test dataset.')
-    parser.add_argument('--project_name', type=str, default="cMamba-project", help='WandB project name.')
+    parser = argparse.ArgumentParser(description="Training script for the SSM-Hippo model.")
+    parser.add_argument('--train_dataset', type=str, default="ssm-hippo-project", help='The training dataset.')
+    parser.add_argument('--test_dataset', type=str, default="ssm-hippo-project", help='The test dataset.')
+    parser.add_argument('--project_name', type=str, default="ssm-hippo-project", help='WandB project name.')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for the optimizer.')
     parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training.')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training.')
