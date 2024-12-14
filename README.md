@@ -53,7 +53,8 @@ To use the data preparation script, save it as `prepare_data.py` and run it from
 ### Example Command
 
 ```python
-python prepare_data.py --input_file exported_data_transformed.json --output_file prepared_data.npz --input_length 96 --forecast_length 96 --test_size 0.2
+chmod +x scripts/prepare_data.sh
+./scripts/prepare_data.sh
 ```
 
 This command will load the data from exported_data_transformed.json, process it, and save the training and test sets to prepared_data.npz.
@@ -93,7 +94,8 @@ To use the training script, save it as train_ssm_hippo.py and run it from the co
 #### Example Command
 
 ```bash
-python train_c_mamba.py --train_dataset prepared_data.npz --test_dataset prepared_data.npz --seq_len 96 --forecast_len 96 --input_dim 17 --hidden_dim 128 --num_layers 4 --project_name my_ssm_hippo_project --learning_rate 0.001 --num_epochs 10 --batch_size 32
+chmod +x scripts/train.sh
+./scripts/train.sh
 ```
 
 This command will train the SSM_HIPPO model using the provided parameters and log the training process to WandB.
