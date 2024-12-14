@@ -17,7 +17,7 @@ To use this model, you need to have the following libraries installed:
 - `scikit-learn`
 - `matplotlib`
 - `wandb`
-- 'catboost'
+- `catboost`
 
 You can install them using pip:
 
