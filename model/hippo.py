@@ -278,3 +278,19 @@ def nplr(measure, N, rank=1, dtype=torch.float, diagonalize_precision=True, B_cl
     # Downstream classes just call this A for simplicity,
     # which is also more consistent with the diagonal case
     return W, P, B, V
+
+def optimize_hippo_transition(measure, N, training_progress):
+    """Optimizes HiPPO transition matrices based on training progress"""
+    A, B = transition(measure, N)
+    
+    # Scale matrices based on training progress
+    scale_factor = 1.0 - 0.2 * training_progress  # Gradually reduce influence
+    A = A * scale_factor
+    B = B * (2.0 - scale_factor)  # Compensate for reduced A influence
+    
+    # Add stability regularization
+    if measure == 'legs':
+        # Add diagonal dominance for stability
+        A = A - np.diag(np.sum(np.abs(A), axis=1) * 0.1)
+    
+    return torch.as_tensor(A, dtype=torch.float), torch.as_tensor(B, dtype=torch.float)
