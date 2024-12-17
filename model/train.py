@@ -6,41 +6,34 @@ from torch.utils.data import DataLoader
 from mamba import SSM_HIPPO, ModelArgs
 import matplotlib.pyplot as plt
 import wandb
-from catboost import CatBoostRegressor
 import numpy as np
-from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, r2_score
-
-def ensemble_predict(ssm_model, catboost_model, X_batch, device):
-    """Combine predictions from SSM-Hippo and CatBoost models"""
-    with torch.no_grad():
-        ssm_pred = ssm_model(X_batch.to(device)).cpu().numpy()
-    catboost_pred = catboost_model.predict(X_batch.cpu().numpy())
-    return 0.6 * ssm_pred + 0.4 * catboost_pred
 
 def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_available() else "cpu"):
     wandb.init(project=model_args.project_name)
     wandb.config.update(vars(model_args))
 
-    # Initialize models
+    # Initialize model with optimized HiPPO configurations
     ssm_model = SSM_HIPPO(model_args).to(device)
-    catboost_model = CatBoostRegressor(
-        iterations=model_args.catboost_iterations,
-        learning_rate=model_args.catboost_learning_rate,
-        depth=model_args.catboost_depth,
-        loss_function='RMSE',
-        eval_metric='RMSE',
-        early_stopping_rounds=50,
-        verbose=100
-    )
-
+    
+    # Initialize layer-wise learning rates for better training
+    param_groups = []
+    for i, layer in enumerate(ssm_model.ssm_hippo_blocks):
+        param_groups.append({
+            'params': layer.parameters(),
+            'lr': model_args.learning_rate * (0.9 ** i)  # Decrease learning rate for deeper layers
+        })
+    
     criterion = nn.MSELoss()
-    optimizer = optim.AdamW(ssm_model.parameters(), lr=model_args.learning_rate, weight_decay=0.01)
+    optimizer = optim.AdamW(param_groups, weight_decay=0.01)
+    
+    # Cosine annealing with warmup
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=model_args.learning_rate,
         epochs=model_args.num_epochs,
-        steps_per_epoch=len(train_loader)
+        steps_per_epoch=len(train_loader),
+        pct_start=0.1  # 10% warmup
     )
 
     train_losses = []
@@ -49,34 +42,24 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
     patience = 10
     patience_counter = 0
 
-    # K-fold cross validation
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
-    
     for epoch in range(model_args.num_epochs):
         ssm_model.train()
         running_loss = 0.0
-        all_train_data = []
-        all_train_labels = []
 
-        print(f"\nEpoch [{epoch+1}/{model_args.num_epochs}]")
-        print(f"Learning Rate: {optimizer.param_groups[0]['lr']}")
-
-        # Training loop
         for i, (X_batch, y_batch) in enumerate(train_loader):
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
 
-            # Store data for CatBoost
-            all_train_data.append(X_batch.cpu().numpy())
-            all_train_labels.append(y_batch.cpu().numpy())
-
             optimizer.zero_grad()
-            output = ssm_model(X_batch)
+            
+            # Apply dynamic HiPPO transition scaling
+            output = ssm_model(X_batch, epoch/model_args.num_epochs)
             loss = criterion(output, y_batch)
             loss.backward()
 
-            # Gradient Clipping
-            torch.nn.utils.clip_grad_norm_(ssm_model.parameters(), max_norm=1.0)
+            # Gradient Clipping with dynamic threshold
+            max_norm = 1.0 * (0.9 ** (epoch // 10))  # Reduce clipping threshold over time
+            torch.nn.utils.clip_grad_norm_(ssm_model.parameters(), max_norm=max_norm)
             
             optimizer.step()
             scheduler.step()
@@ -88,27 +71,9 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
                     "batch_loss": loss.item(),
                     "learning_rate": scheduler.get_last_lr()[0],
                     "epoch": epoch + 1,
-                    "step": i + 1
+                    "step": i + 1,
+                    "gradient_norm": max_norm
                 })
-
-        # Train CatBoost model
-        X_train = np.concatenate(all_train_data)
-        y_train = np.concatenate(all_train_labels)
-        
-        # Cross-validation training for CatBoost
-        cv_scores = []
-        for fold, (train_idx, val_idx) in enumerate(kf.split(X_train)):
-            X_fold_train, X_fold_val = X_train[train_idx], X_train[val_idx]
-            y_fold_train, y_fold_val = y_train[train_idx], y_train[val_idx]
-            
-            catboost_model.fit(
-                X_fold_train, y_fold_train,
-                eval_set=(X_fold_val, y_fold_val),
-                silent=True
-            )
-            
-            fold_pred = catboost_model.predict(X_fold_val)
-            cv_scores.append(mean_squared_error(y_fold_val, fold_pred, squared=False))
 
         # Validation phase
         ssm_model.eval()
@@ -120,13 +85,12 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
             for X_batch, y_batch in test_loader:
                 X_batch = X_batch.to(device)
                 y_batch = y_batch.to(device)
-
-                # Ensemble prediction
-                combined_pred = ensemble_predict(ssm_model, catboost_model, X_batch, device)
-                all_preds.append(combined_pred)
+                
+                pred = ssm_model(X_batch, epoch/model_args.num_epochs)
+                all_preds.append(pred.cpu().numpy())
                 all_true.append(y_batch.cpu().numpy())
                 
-                loss = mean_squared_error(y_batch.cpu().numpy(), combined_pred, squared=False)
+                loss = mean_squared_error(y_batch.cpu().numpy(), pred.cpu().numpy(), squared=False)
                 val_loss += loss
 
         val_loss /= len(test_loader)
@@ -136,13 +100,11 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
-            # Save best model
             torch.save({
-                'ssm_model_state_dict': ssm_model.state_dict(),
-                'catboost_model': catboost_model,
+                'model_state_dict': ssm_model.state_dict(),
                 'epoch': epoch,
                 'best_val_loss': best_val_loss
-            }, 'best_ensemble_model.pth')
+            }, 'best_model.pth')
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -158,13 +120,11 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
             "train_loss": running_loss / len(train_loader),
             "val_loss": val_loss,
             "r2_score": r2,
-            "cv_score_mean": np.mean(cv_scores),
-            "cv_score_std": np.std(cv_scores),
             "epoch": epoch + 1
         })
 
     wandb.finish()
-    return ssm_model, catboost_model
+    return ssm_model
 
 # Main execution remains the same with additional arguments
 if __name__ == "__main__":
@@ -180,9 +140,6 @@ if __name__ == "__main__":
     parser.add_argument('--input_dim', type=int, required=True, help='Input dimension for the model.')
     parser.add_argument('--hidden_dim', type=int, required=True, help='Hidden dimension for the model.')
     parser.add_argument('--num_layers', type=int, required=True, help='Number of layers in the model.')
-    parser.add_argument('--catboost_iterations', type=int, default=1000)
-    parser.add_argument('--catboost_learning_rate', type=float, default=0.03)
-    parser.add_argument('--catboost_depth', type=int, default=6)
     
     args = parser.parse_args()
 
@@ -200,9 +157,6 @@ if __name__ == "__main__":
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
         project_name=args.project_name,  # Add training-related args to ModelArgs
-        catboost_iterations=args.catboost_iterations,
-        catboost_learning_rate=args.catboost_learning_rate,
-        catboost_depth=args.catboost_depth
     )
 
     train(model_args, train_loader, test_loader)
