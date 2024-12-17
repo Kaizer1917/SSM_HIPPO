@@ -279,18 +279,29 @@ def nplr(measure, N, rank=1, dtype=torch.float, diagonalize_precision=True, B_cl
     # which is also more consistent with the diagonal case
     return W, P, B, V
 
-def optimize_hippo_transition(measure, N, training_progress):
-    """Optimizes HiPPO transition matrices based on training progress"""
+def optimize_hippo_transition(measure, N, training_progress, device):
+    """Dynamically optimizes HiPPO transition matrices during training"""
     A, B = transition(measure, N)
     
-    # Scale matrices based on training progress
-    scale_factor = 1.0 - 0.2 * training_progress  # Gradually reduce influence
-    A = A * scale_factor
-    B = B * (2.0 - scale_factor)  # Compensate for reduced A influence
+    # Convert to torch tensors
+    A = torch.as_tensor(A, dtype=torch.float, device=device)
+    B = torch.as_tensor(B, dtype=torch.float, device=device)
+    
+    # Dynamic scaling based on training progress
+    progress_factor = torch.sigmoid(torch.tensor(training_progress * 10 - 5))
+    
+    if measure == 'legs':
+        # Optimize Legendre-based transitions
+        scale = torch.exp(-progress_factor * torch.arange(N, device=device) / N)
+        A = A * scale.unsqueeze(0)
+        B = B * scale.unsqueeze(1)
+    
+    elif measure == 'fourier':
+        # Optimize Fourier-based transitions
+        freq_scale = 1.0 + progress_factor * (torch.arange(N, device=device) / N)
+        A = A * freq_scale.unsqueeze(0)
     
     # Add stability regularization
-    if measure == 'legs':
-        # Add diagonal dominance for stability
-        A = A - np.diag(np.sum(np.abs(A), axis=1) * 0.1)
+    A = A - torch.eye(N, device=device) * 0.1 * (1 - progress_factor)
     
-    return torch.as_tensor(A, dtype=torch.float), torch.as_tensor(B, dtype=torch.float)
+    return A, B
