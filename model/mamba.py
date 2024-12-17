@@ -111,16 +111,28 @@ class SSM_HIPPO(nn.Module):
         # Calculate number of patches
         self.num_patches = (args.seq_len - args.patch_len) // args.stride + 1
         
-        # Input projection
-        self.input_proj = nn.Linear(args.num_channels, args.d_model)
+        # Input projection with skip connection
+        self.input_proj = nn.Sequential(
+            nn.Linear(args.num_channels, args.d_model),
+            nn.LayerNorm(args.d_model),
+            nn.GELU()
+        )
+        self.input_skip = nn.Linear(args.num_channels, args.d_model)
         
-        # Adaptive patch embedding with correct dimensions
+        # Residual patch embedding
         self.patch_embed = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(args.d_model * (1 + (i-1)//2 if i > 0 else 1), args.d_model * (1 + i//2)),
-                nn.LayerNorm(args.d_model * (1 + i//2)),
-                nn.GELU()
-            ) for i in range(args.n_layer)
+            nn.ModuleDict({
+                'main': nn.Sequential(
+                    nn.Linear(args.d_model * (1 + (i-1)//2 if i > 0 else 1), 
+                             args.d_model * (1 + i//2)),
+                    nn.LayerNorm(args.d_model * (1 + i//2)),
+                    nn.GELU()
+                ),
+                'skip': nn.Linear(
+                    args.d_model * (1 + (i-1)//2 if i > 0 else 1),
+                    args.d_model * (1 + i//2)
+                ) if i > 0 else None
+            }) for i in range(args.n_layer)
         ])
         
         # Initialize SSM blocks with varying dimensions
@@ -158,12 +170,13 @@ class SSM_HIPPO(nn.Module):
     def forward(self, x, training_progress=0.0):
         B, C, L = x.shape
         
-        # Project input channels to d_model dimension
-        x = x.transpose(1, 2)  # [B, L, C]
-        x = self.input_proj(x)  # [B, L, d_model]
+        # Input projection with skip connection
+        x_proj = x.transpose(1, 2)  # [B, L, C]
+        x = self.input_proj(x_proj)  # [B, L, d_model]
+        x = x + self.input_skip(x_proj)  # Skip connection
         x = x.transpose(1, 2)  # [B, d_model, L]
         
-        # Create patches
+        # Create patches with residual connections
         patches = []
         for i in range(0, L - self.args.patch_len + 1, self.args.stride):
             patch = x[:, :, i:i+self.args.patch_len]  # [B, d_model, patch_len]
@@ -171,10 +184,16 @@ class SSM_HIPPO(nn.Module):
         
         x = torch.stack(patches, dim=1)  # [B, num_patches, d_model]
         
-        # Progressive feature extraction
+        # Progressive feature extraction with skip connections
         for i in range(self.args.n_layer):
-            x = self.patch_embed[i](x)
-            x = self.ssm_blocks[i](x, training_progress)
+            # Residual patch embedding
+            x_res = x
+            x = self.patch_embed[i]['main'](x)
+            if i > 0 and self.patch_embed[i]['skip'] is not None:
+                x = x + self.patch_embed[i]['skip'](x_res)
+            
+            # SSM block with residual
+            x = x + self.ssm_blocks[i](x, training_progress)
         
         x = self.norm_f(x)
         x = x.reshape(B, -1)
