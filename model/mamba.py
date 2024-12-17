@@ -35,7 +35,6 @@ class ModelArgs:
             
         if self.forecast_len % self.pad_multiple != 0:
             self.forecast_len += (self.pad_multiple - self.forecast_len % self.pad_multiple)
-
 class ChannelMixup(nn.Module):
     def __init__(self, sigma=0.5):
         super().__init__()
@@ -103,7 +102,6 @@ class SSM_HIPPO(nn.Module):
         
         self.norm_f = RMSNorm(args.d_model)
         self.output_layer = nn.Linear(args.d_model * args.num_patches, args.num_channels * args.forecast_len)
-
     def forward(self, input_ids):
         print("input_ids", input_ids.shape) if self.args.v else None
         x = self.channel_mixup(input_ids)
