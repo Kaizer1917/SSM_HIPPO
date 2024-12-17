@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat, einsum
-import hippo
+from hippo import transition, optimize_hippo_transition
 
 class ModelArgs:
     def __init__(self, d_model=128, n_layer=4, seq_len=96, d_state=16, expand=2, dt_rank='auto',
@@ -35,6 +35,19 @@ class ModelArgs:
             
         if self.forecast_len % self.pad_multiple != 0:
             self.forecast_len += (self.pad_multiple - self.forecast_len % self.pad_multiple)
+
+        # Optimized state space parameters
+        self.d_state_min = d_state
+        self.d_state_max = d_state * 2
+
+        # Enhanced patch embedding parameters
+        self.patch_overlap = 0.5  # New parameter for overlapping patches
+        self.stride = max(1, int(patch_len * (1 - self.patch_overlap)))
+
+        # Progressive expansion parameters
+        self.expand_factor = 1.5
+        self.max_expansion = 3
+
 class ChannelMixup(nn.Module):
     def __init__(self, sigma=0.5):
         super().__init__()
@@ -71,9 +84,9 @@ class PatchMamba(nn.Module):
         self.args = args
         self.layers = nn.ModuleList([MambaBlock(args) for _ in range(args.n_layer)])
 
-    def forward(self, x):
+    def forward(self, x, training_progress=0.0):
         for layer in self.layers:
-            x = x + layer(x)
+            x = x + layer(x, training_progress)
         return x
 
 class SSM_HIPPOBlock(nn.Module):
@@ -94,56 +107,80 @@ class SSM_HIPPO(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
-        self.channel_mixup = ChannelMixup(args.sigma)
-        self.patch_embedding = nn.Linear(args.patch_len * args.num_channels, args.d_model)
-        self.pos_encoding = nn.Parameter(torch.randn(1, args.num_patches, args.d_model))
         
-        self.ssm_hippo_blocks = nn.ModuleList([SSM_HIPPOBlock(args) for _ in range(args.n_layer)])
+        # Calculate number of patches
+        self.num_patches = (args.seq_len - args.patch_len) // args.stride + 1
         
-        self.norm_f = RMSNorm(args.d_model)
-        self.output_layer = nn.Linear(args.d_model * args.num_patches, args.num_channels * args.forecast_len)
-    def forward(self, input_ids):
-        print("input_ids", input_ids.shape) if self.args.v else None
-        x = self.channel_mixup(input_ids)
-        print("after channel mixup", x.shape) if self.args.v else None
-        # Patching
-        B, V, L = x.shape
-        P = self.args.patch_len
-        S = self.args.stride
+        # Input projection
+        self.input_proj = nn.Linear(args.num_channels, args.d_model)
+        
+        # Adaptive patch embedding with correct dimensions
+        self.patch_embed = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(args.d_model * (1 + (i-1)//2 if i > 0 else 1), args.d_model * (1 + i//2)),
+                nn.LayerNorm(args.d_model * (1 + i//2)),
+                nn.GELU()
+            ) for i in range(args.n_layer)
+        ])
+        
+        # Initialize SSM blocks with varying dimensions
+        self.ssm_blocks = nn.ModuleList([
+            MambaBlock(
+                ModelArgs(
+                    d_model=args.d_model * (1 + i//2),
+                    n_layer=args.n_layer,
+                    seq_len=args.seq_len,
+                    d_state=args.d_state * (1 + i//2),
+                    expand=args.expand,
+                    dt_rank=args.dt_rank,
+                    d_conv=args.d_conv,
+                    pad_multiple=args.pad_multiple,
+                    conv_bias=args.conv_bias,
+                    bias=args.bias,
+                    num_channels=args.num_channels,
+                    patch_len=args.patch_len,
+                    stride=args.stride,
+                    forecast_len=args.forecast_len,
+                    sigma=args.sigma,
+                    reduction_ratio=args.reduction_ratio,
+                    verbose=args.v
+                )
+            ) for i in range(args.n_layer)
+        ])
+        
+        final_dim = args.d_model * (1 + (args.n_layer-1)//2)
+        self.norm_f = RMSNorm(final_dim)
+        self.output_proj = nn.Linear(
+            final_dim * self.num_patches,
+            args.num_channels * args.forecast_len
+        )
 
-        # Manual patching
+    def forward(self, x, training_progress=0.0):
+        B, C, L = x.shape
+        
+        # Project input channels to d_model dimension
+        x = x.transpose(1, 2)  # [B, L, C]
+        x = self.input_proj(x)  # [B, L, d_model]
+        x = x.transpose(1, 2)  # [B, d_model, L]
+        
+        # Create patches
         patches = []
-        for i in range(0, L - P + 1, S):
-            patch = x[:, :, i:i+P].reshape(B, -1)
-            patches.append(patch)
-        num_patches = (L - P) // S + 1
-        print(f"Calculated number of patches: {num_patches}") if self.args.v else None
-
-        x = torch.stack(patches, dim=1)  # (B, num_patches, V*P)
-        print("after patching", x.shape) if self.args.v else None
-        # Patch embedding
-        x = self.patch_embedding(x)  # (B, num_patches, d_model)
-        print("after patch embedding", x.shape) if self.args.v else None
-        # Adjust positional encoding
-        pos_encoding = self.pos_encoding[:, :x.size(1), :]
-        print(f"Positional encoding shape: {pos_encoding.shape}") if self.args.v else None
-        # Add positional encoding
-        x = x + pos_encoding
-        print("after positional encoding", x.shape) if self.args.v else None
-        # Apply SSM_HIPPO blocks
-        for block in self.ssm_hippo_blocks:
-            x = block(x)
-        print("after SSM_HIPPO blocks", x.shape) if self.args.v else None
+        for i in range(0, L - self.args.patch_len + 1, self.args.stride):
+            patch = x[:, :, i:i+self.args.patch_len]  # [B, d_model, patch_len]
+            patches.append(patch.mean(dim=2))  # [B, d_model]
+        
+        x = torch.stack(patches, dim=1)  # [B, num_patches, d_model]
+        
+        # Progressive feature extraction
+        for i in range(self.args.n_layer):
+            x = self.patch_embed[i](x)
+            x = self.ssm_blocks[i](x, training_progress)
+        
         x = self.norm_f(x)
-        print("after norm_f", x.shape) if self.args.v else None
-        # Output layer
-        x = x.reshape(x.shape[0], -1)
-        print("before output layer", x.shape) if self.args.v else None
-        logits = self.output_layer(x)
-        print("after output layer", logits.shape) if self.args.v else None
-        logits = logits.reshape(-1, self.args.num_channels, self.args.forecast_len)
-        print("final logits", logits.shape) if self.args.v else None
-        return logits
+        x = x.reshape(B, -1)
+        x = self.output_proj(x)
+        
+        return x.reshape(B, C, -1)
 
 class MambaBlock(nn.Module):
     def __init__(self, args: ModelArgs):
@@ -169,11 +206,11 @@ class MambaBlock(nn.Module):
         self.D = nn.Parameter(torch.ones(args.d_inner))
         self.out_proj = nn.Linear(args.d_inner, args.d_model, bias=args.bias)
 
-    def forward(self, x):
+    def forward(self, x, training_progress=0.0):
         (b, l, d) = x.shape
         
-        x_and_res = self.in_proj(x)
-        (x, res) = x_and_res.split(split_size=[self.args.d_inner, self.args.d_inner], dim=-1)
+        x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_inner)
+        (x, res) = x_and_res.chunk(2, dim=-1)  # shape (b, l, d_inner)
 
         x = rearrange(x, 'b l d_in -> b d_in l')
         x = self.conv1d(x)[:, :, :l]
@@ -181,7 +218,15 @@ class MambaBlock(nn.Module):
         
         x = F.silu(x)
 
-        y = self.ssm(x)
+        # Get optimized HiPPO matrices here
+        A, B = optimize_hippo_transition(
+            'legs',
+            self.args.d_state,
+            training_progress,
+            x.device
+        )
+        
+        y = self.ssm(x, A, B)
         
         y = y * F.silu(res)
         
@@ -189,7 +234,7 @@ class MambaBlock(nn.Module):
 
         return output
 
-    def ssm(self, x):
+    def ssm(self, x, A, B):
         """Runs the SSM. See:
             - Algorithm 2 in Section 3.2 in the Mamba paper [1]
             - run_SSM(A, B, C, u) in The Annotated S4 [2]
@@ -231,7 +276,7 @@ class MambaBlock(nn.Module):
         
         # Initialize HiPPO transition
         measure = 'legs'
-        A_hippo, B_hippo = hippo.transition(measure, N)
+        A_hippo, B_hippo = transition(measure, N)
         A_hippo = torch.as_tensor(A_hippo, dtype=torch.float, device=u.device)
         B_hippo = torch.as_tensor(B_hippo, dtype=torch.float, device=u.device)[:, 0]  # Take first column and flatten
         
