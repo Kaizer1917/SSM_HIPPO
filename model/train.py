@@ -8,8 +8,6 @@ import matplotlib.pyplot as plt
 import wandb
 import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score
-from model.regularization import AdaptiveRegularization
-from model.losses import TemporalCoherenceLoss
 
 def get_scheduler(optimizer, model_args, train_loader):
     # Calculate total steps for all epochs
@@ -38,13 +36,12 @@ def get_scheduler(optimizer, model_args, train_loader):
     
     return scheduler
 
-def train(model_args, train_loader, test_loader, device="cuda"):
+def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_available() else "cpu"):
     wandb.init(project=model_args.project_name)
     wandb.config.update(vars(model_args))
 
     # Initialize model with optimized HiPPO configurations
     ssm_model = SSM_HIPPO(model_args).to(device)
-    ssm_model = AdaptiveRegularization(ssm_model).to(device)
     
     # Initialize layer-wise learning rates for better training
     param_groups = []
@@ -54,7 +51,7 @@ def train(model_args, train_loader, test_loader, device="cuda"):
             'lr': model_args.learning_rate * (0.9 ** i)  # Decrease learning rate for deeper layers
         })
     
-    criterion = TemporalCoherenceLoss(alpha=0.3, beta=0.2)
+    criterion = nn.MSELoss()
     optimizer = optim.AdamW(param_groups, weight_decay=0.01)
     
     # Cosine annealing with warmup
