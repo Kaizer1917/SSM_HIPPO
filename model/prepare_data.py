@@ -14,6 +14,45 @@ def create_sequences(data, input_length, forecast_length):
         targets.append(target)
     return np.array(sequences), np.array(targets)
 
+def enhanced_preprocessing(data, args):
+    # Reference existing prepare_data.py
+    """
+    startLine: 17
+    endLine: 57
+    """
+    
+    # Add new preprocessing steps
+    def remove_outliers(features, targets, threshold=3):
+        z_scores = np.abs((features - features.mean()) / features.std())
+        mask = (z_scores < threshold).all(axis=1)
+        return features[mask], targets[mask]
+    
+    def add_temporal_features(sequences):
+        # Add time-based features
+        time_features = []
+        for seq in sequences:
+            # Calculate temporal statistics
+            rolling_mean = np.convolve(seq, np.ones(3)/3, mode='valid')
+            rolling_std = np.array([np.std(seq[i:i+3]) for i in range(len(seq)-2)])
+            
+            # Add features
+            time_features.append(np.concatenate([
+                rolling_mean[..., None],
+                rolling_std[..., None]
+            ], axis=-1))
+            
+        return np.array(time_features)
+    
+    # Apply enhanced preprocessing
+    sequences, targets = create_sequences(data, args.input_length, args.forecast_length)
+    sequences, targets = remove_outliers(sequences, targets)
+    temporal_features = add_temporal_features(sequences)
+    
+    # Combine original and temporal features
+    enhanced_sequences = np.concatenate([sequences, temporal_features], axis=-1)
+    
+    return enhanced_sequences, targets
+
 def main(args):
     # Load the data
     df = pd.read_json(args.input_file)
