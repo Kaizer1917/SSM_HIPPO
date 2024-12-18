@@ -7,3 +7,4 @@ matplotlib>=3.4.0
 einops>=0.3.0
 catboost>=1.0.0
 scipy>=1.7.0
+tvm
