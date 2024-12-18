@@ -8,13 +8,43 @@ import matplotlib.pyplot as plt
 import wandb
 import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score
+from model.regularization import AdaptiveRegularization
+from model.losses import TemporalCoherenceLoss
 
-def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_available() else "cpu"):
+def get_scheduler(optimizer, model_args, train_loader):
+    # Calculate total steps for all epochs
+    total_steps = len(train_loader) * model_args.num_epochs
+    
+    # Warmup steps (10% of total steps)
+    warmup_steps = int(0.1 * total_steps)
+    
+    # Create scheduler chain
+    scheduler = torch.optim.lr_scheduler.ChainedScheduler([
+        # Linear warmup
+        torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=0.1,
+            end_factor=1.0,
+            total_iters=warmup_steps
+        ),
+        # Cosine annealing with restarts
+        torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=total_steps // 3,  # Restart every third of training
+            T_mult=2,  # Double the restart interval each time
+            eta_min=model_args.learning_rate * 0.01  # Minimum LR
+        )
+    ])
+    
+    return scheduler
+
+def train(model_args, train_loader, test_loader, device="cuda"):
     wandb.init(project=model_args.project_name)
     wandb.config.update(vars(model_args))
 
     # Initialize model with optimized HiPPO configurations
     ssm_model = SSM_HIPPO(model_args).to(device)
+    ssm_model = AdaptiveRegularization(ssm_model).to(device)
     
     # Initialize layer-wise learning rates for better training
     param_groups = []
@@ -24,17 +54,11 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
             'lr': model_args.learning_rate * (0.9 ** i)  # Decrease learning rate for deeper layers
         })
     
-    criterion = nn.MSELoss()
+    criterion = TemporalCoherenceLoss(alpha=0.3, beta=0.2)
     optimizer = optim.AdamW(param_groups, weight_decay=0.01)
     
     # Cosine annealing with warmup
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=model_args.learning_rate,
-        epochs=model_args.num_epochs,
-        steps_per_epoch=len(train_loader),
-        pct_start=0.1  # 10% warmup
-    )
+    scheduler = get_scheduler(optimizer, model_args, train_loader)
 
     train_losses = []
     val_losses = []
