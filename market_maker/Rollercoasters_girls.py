@@ -10,7 +10,7 @@ from model.losses import AdaptiveTemporalCoherenceLoss
 from model.prepare_data import create_sequences, TimeSeriesDataset, create_optimized_dataloaders
 from model.regularization import AdaptiveRegularization
 
-# Constants from original file
+
 NANOSECOND = 1
 MICROSECOND = 1000
 MILLISECOND = 1000000
