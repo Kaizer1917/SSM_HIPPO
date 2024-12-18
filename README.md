@@ -6,6 +6,19 @@
 - **Channel Attention**: Mechanism to dynamically weigh different channels based on their importance.
 - **Patch-based Input Processing**: Efficiently handles long sequences by splitting them into patches.
 - **Selective State-Space Model (SSM)**: Implements advanced state-space modeling for capturing long-range dependencies.
+- **Dynamic HiPPO Transitions**: Implements various HiPPO operators including:
+  - Legendre (translated and scaled)
+  - Laguerre (translated and generalized)
+  - Fourier-based transitions
+  - LMU equivalents
+- **Adaptive State Space Modeling**: 
+  - Optimizes transition matrices during training
+  - Supports progressive dimension expansion
+  - Dynamic scaling based on training progress
+- **Selective State-Space Model (SSM)**:
+  - Implements NPLR (Normal Plus Low-Rank) form of HiPPO matrices
+  - Efficient state-space computations with selective scanning
+  - Supports multiple measure types (legs, legt, fourier, etc.)
 
 ## Installation
 
