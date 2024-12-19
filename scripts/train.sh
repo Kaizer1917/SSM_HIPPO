@@ -1,17 +1,22 @@
 # scripts/train.sh
 #!/bin/bash
-python model/train.py \
-    --train_dataset /app/data/train.npz \
-    --test_dataset /app/data/test.npz \
-    --project_name "ssm-hippo-project" \
-     --seq_len 100 \
-    --forecast_len 24 \
-    --input_dim 1 \
-    --hidden_dim 64 \
-    --num_layers 4 \
-    --batch_size 32 \
-    --num_epochs 50 \
+
+# Set environment variables
+export CUDA_VISIBLE_DEVICES=0
+export MODEL_NAME="ssm_hippo_v1"
+
+# Train the model
+python market_maker/model/train.py \
+    --train_dataset $DATA_DIR/processed/market_data.npz \
+    --test_dataset $DATA_DIR/processed/market_data.npz \
+    --project_name "market-maker-ssm" \
+    --model_name $MODEL_NAME \
+    --seq_len 96 \
+    --forecast_len 32 \
+    --num_channels 24 \
+    --d_model 128 \
+    --n_layer 4 \
     --learning_rate 0.001 \
-    --catboost_iterations 1000 \
-    --catboost_learning_rate 0.03 \
-    --catboost_depth 6
+    --num_epochs 50 \
+    --batch_size 32 \
+    --checkpoint_dir $MODEL_DIR/checkpoints
