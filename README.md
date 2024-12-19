@@ -1,115 +1,115 @@
-# SSM_HIPPO
+# Market Making with SSM-HIPPO
+
+A sophisticated market making system that leverages State Space Models (SSM) with HiPPO operators for dynamic price prediction and market making strategies.
 
 ## Features
 
-- **Channel Mixup**: A data augmentation technique to enhance the robustness of the model.
-- **Channel Attention**: Mechanism to dynamically weigh different channels based on their importance.
-- **Patch-based Input Processing**: Efficiently handles long sequences by splitting them into patches.
-- **Selective State-Space Model (SSM)**: Implements advanced state-space modeling for capturing long-range dependencies.
-- **Dynamic HiPPO Transitions**: Implements various HiPPO operators including:
-  - Legendre (translated and scaled)
-  - Laguerre (translated and generalized)
-  - Fourier-based transitions
-  - LMU equivalents
-- **Adaptive State Space Modeling**: 
-  - Optimizes transition matrices during training
-  - Supports progressive dimension expansion
-  - Dynamic scaling based on training progress
-- **Selective State-Space Model (SSM)**:
-  - Implements NPLR (Normal Plus Low-Rank) form of HiPPO matrices
-  - Efficient state-space computations with selective scanning
-  - Supports multiple measure types (legs, legt, fourier, etc.)
+### Rollercoaster_girls.py Core Components
+
+- **Predict Class**: Advanced prediction system for market making
+  - Real-time price movement prediction using SSM-HIPPO
+  - Dynamic state management for market conditions
+  - Adaptive temporal coherence for price stability
+  - Efficient forward-filling for time series alignment
+
+### SSM Integration for Market Making
+
+- **Dynamic State Tracking**:
+  - Continuous monitoring of market state variables
+  - Adaptive transition matrices for varying market conditions
+  - Real-time state updates with new market data
+
+- **Price Prediction Features**:
+  - Multi-horizon forecasting capabilities
+  - Channel attention for relevant feature selection
+  - Patch-based processing for varying timeframes
+  - Temporal coherence loss for stable predictions
+
+- **Market Making Optimization**:
+  - Dynamic bid-ask spread adjustment
+  - State-aware position management
+  - Risk-adjusted order sizing
+  - Adaptive regularization for market volatility
 
 ## Installation
 
-To use this model, you need to have the following libraries installed:
-- `torch`
-- `einops`
-- `numpy`
-- `pandas`
-- `scikit-learn`
-- `matplotlib`
-- `wandb`
-- `catboost`
--  `tvm (optional)`
-
-You can install them using pip:
-
+Required dependencies:
 ```bash
-pip install torch einops numpy pandas scikit-learn matplotlib wandb
+pip install torch einops numpy pandas polars scikit-learn tvm
 ```
 
-## Data Preparation
+## Usage
 
-Before training the SSM_HIPPO model, you'll need to prepare your data. We provide a data preparation script that preprocesses your time series data, normalizes the features, and splits it into training and test sets.
-
-### Data Preparation Script
-
-The data preparation script performs the following steps:
-1. Loads the input JSON file containing the time series data.
-2. Converts timestamps to datetime format, removes duplicates, and sorts the data.
-3. Selects numerical columns as features.
-4. Normalizes the features using `StandardScaler`.
-5. Creates input-output sequences based on specified input and forecast lengths.
-6. Splits the data into training and test sets.
-7. Saves the processed data to an NPZ file.
-
-### Usage
-
-To use the data preparation script, save it as `prepare_data.py` and run it from the command line with the appropriate arguments. Here are the arguments you need to provide:
-
-- `--input_file`: Path to the input JSON file containing the time series data.
-- `--output_file`: Path to the output file (NPZ format) where the processed data will be saved.
-- `--input_length`: Length of the input sequences.
-- `--forecast_length`: Length of the forecast sequences.
-- `--test_size`: Proportion of the dataset to include in the test split (default is 0.2).
-
-### Example Command
+### Basic Usage
 
 ```python
-chmod +x scripts/prepare_data.sh
-./scripts/prepare_data.sh
+from market_maker.Rollercoasters_girls import Predict
+
+# Initialize predictor
+predictor = Predict(
+    lookback_window=96,
+    forecast_horizon=32,
+    num_features=24
+)
+
+# Make predictions
+predictions = predictor.forward(market_data)
 ```
 
-This command will load the data from exported_data_transformed.json, process it, and save the training and test sets to prepared_data.npz.
+### Advanced Configuration
 
-## Training
+```python
+# Configure SSM-HIPPO parameters
+model_args = ModelArgs(
+    d_model=128,          # Model dimension
+    n_layer=4,            # Number of SSM layers
+    seq_len=96,           # Input sequence length
+    forecast_len=32,      # Prediction horizon
+    num_channels=24,      # Number of market features
+    patch_len=16,         # Patch size for processing
+    stride=8              # Stride for patch sampling
+)
 
-After preparing your data, you can train the SSM_HIPPO model using the training script. The training script initializes the model, sets up the loss function and optimizer, and handles the training loop with logging and model saving.
-
-### Training Script
-
-The training script performs the following steps:
-
-1. Initializes the WandB run for tracking.
-2. Initializes the model, loss function, and optimizer.
-3. Loads the training and validation data.
-4. Runs the training loop with gradient clipping and loss calculation.
-5. Logs various metrics, including batch loss, epoch loss, gradient norms, and weight statistics.
-6. Saves the model checkpoints and final model.
-
-#### Usage
-
-To use the training script, save it as train_ssm_hippo.py and run it from the command line with the appropriate arguments. Here are the arguments you need to provide:
-
-- `--train_dataset`: Path to the training dataset (NPZ format).
-- `--test_dataset`: Path to the test dataset (NPZ format).
-- `--project_name`: WandB project name.
-- `--learning_rate`: Learning rate for the optimizer (default is 0.- 001).
-- `--num_epochs`: Number of epochs for training (default is 10).
-- `--batch_size`: Batch size for training (default is 32).
-- `--seq_len`: Length of the input sequences.
-- `--forecast_len`: Length of the forecast sequences.
-- `--input_dim`: Input dimension for the model.
-- `--hidden_dim`: Hidden dimension for the model.
-- `--num_layers`: Number of layers in the model.
-
-
-#### Example Command
-
-```bash
-chmod +x scripts/train.sh
-./scripts/train.sh
+# Initialize with custom configuration
+predictor = Predict(
+    model_args=model_args,
+    use_tvm_optimization=True,
+    adaptive_regularization=True
+)
 ```
 
-This command will train the SSM_HIPPO model using the provided parameters and log the training process to WandB.
+## Market Making Integration
+
+The system is designed to work with market making strategies by providing:
+
+1. **Real-time Predictions**:
+   - Forward-filling missing data points
+   - Handling irregular time series
+   - Fast inference with TVM optimization
+
+2. **State Management**:
+   - Tracking market regimes
+   - Managing position exposure
+   - Monitoring risk metrics
+
+3. **Adaptive Features**:
+   - Dynamic learning rate adjustment
+   - Adaptive regularization
+   - Progressive state space expansion
+
+## Performance Optimization
+
+The implementation includes several optimizations:
+
+- TVM acceleration for inference
+- Efficient memory management
+- Vectorized operations
+- Adaptive computation paths
+
+## Contributing
+
+Feel free to submit issues and enhancement requests!
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
