@@ -112,7 +112,7 @@ Feel free to submit issues and enhancement requests!
 
 
 
-### C++ Implementation (market_maker_cpp/) - comming soon
+### C++ Implementation (market_maker_cpp/) - coming soon
 
 #### Core Components
 
