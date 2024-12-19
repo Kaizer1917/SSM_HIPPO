@@ -55,7 +55,13 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
     optimizer = optim.AdamW(param_groups, weight_decay=0.01)
     
     # Cosine annealing with warmup
-    scheduler = get_scheduler(optimizer, model_args, train_loader)
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=model_args.learning_rate,
+        epochs=model_args.num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.1  # 10% warmup
+    )
 
     train_losses = []
     val_losses = []
