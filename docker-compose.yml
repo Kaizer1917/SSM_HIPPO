@@ -1,17 +1,17 @@
 version: '3.8'
 
 services:
-  mamba-trainer:
+  market-maker:
     build: .
-    image: mamba-ssm
-    container_name: mamba-trainer
+    container_name: market-maker
     volumes:
       - ./data:/app/data
       - ./models:/app/models
       - ./logs:/app/logs
+      - ./config:/app/config
     environment:
+      - CUDA_VISIBLE_DEVICES=0
       - WANDB_API_KEY=${WANDB_API_KEY}
-      - CUDA_VISIBLE_DEVICES=0
     deploy:
       resources:
         reservations:
@@ -19,23 +19,15 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    restart: unless-stopped
 
-  mamba-inference:
-    build: .
-    image: mamba-ssm
-    container_name: mamba-inference
-    volumes:
-      - ./data:/app/data
-      - ./models:/app/models
-      - ./logs:/app/logs
+  monitoring:
+    image: grafana/grafana:latest
+    container_name: market-maker-monitoring
     ports:
-      - "8000:8000"
-    environment:
-      - CUDA_VISIBLE_DEVICES=0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana:/var/lib/grafana
+    depends_on:
+      - market-maker
+    restart: unless-stopped
