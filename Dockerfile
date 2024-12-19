@@ -4,33 +4,37 @@ FROM pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first to leverage Docker cache
-COPY requirements.txt .
-
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
     git \
+    curl \
+    gcc \
+    g++ \
+    make \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
+# Install TVM
+RUN git clone --recursive https://github.com/apache/tvm tvm
+RUN cd tvm && mkdir build && cp cmake/config.cmake build
+RUN cd tvm/build && cmake .. && make -j4
+
+# Copy application code
 COPY . .
 
-# Create directories for data and models
-RUN mkdir -p /app/data /app/models
-
 # Make scripts executable
-RUN chmod +x /app/scripts/*.sh
+RUN chmod +x scripts/*
+
+# Create necessary directories
+RUN mkdir -p /app/data/raw /app/data/processed /app/models/checkpoints /app/logs
 
 # Set environment variables
-ENV PYTHONPATH=/app
-ENV CUDA_VISIBLE_DEVICES=0
-
-# Expose port for potential API endpoints
-EXPOSE 8000
+ENV PYTHONPATH=/app:$PYTHONPATH
+ENV TVM_HOME=/app/tvm
+ENV PYTHONPATH=$TVM_HOME/python:$PYTHONPATH
 
 # Default command
-CMD ["bash"]
+CMD ["./scripts/run_market_maker.sh"]
