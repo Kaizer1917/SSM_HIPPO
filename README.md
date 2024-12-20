@@ -113,3 +113,5 @@ chmod +x scripts/train.sh
 ```
 
 This command will train the SSM_HIPPO model using the provided parameters and log the training process to WandB.
+
+An example of using the model in a market-making system is presented in the repository - https://github.com/Kaizer1917/Market_maker_ssm_hippo
