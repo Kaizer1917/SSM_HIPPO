@@ -16,6 +16,11 @@ from model.mamba_tvm_utils import get_optimal_target, optimize_for_hardware
 from model.mamba_tvm_memory import optimize_memory_layout
 import tvm
 from tvm import relax
+from torch.cuda import amp
+import torch.nn.functional as F
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+import psutil
 
 class AdvancedSSMHiPPO:
     def __init__(self, config):
@@ -74,6 +79,19 @@ class AdvancedSSMHiPPO:
             for i, layer in enumerate(self.model.model.layers):
                 self.model.model.layers[i] = MambaBlockTVM(self.model_args)
 
+        # Add mixed precision training support
+        self.scaler = amp.GradScaler()
+        
+        # Add caching for data preprocessing
+        self.prepare_data = lru_cache(maxsize=32)(self.prepare_data)
+        
+        # Optimize memory usage
+        self.memory_threshold = 0.9  # 90% memory usage threshold
+
+    @staticmethod
+    def get_memory_usage():
+        return psutil.Process().memory_percent()
+
     def prepare_data(self, data, args):
         """Prepare data with enhanced preprocessing"""
         sequences, targets = enhanced_preprocessing(data, args)
@@ -84,33 +102,36 @@ class AdvancedSSMHiPPO:
         return train_loader, val_loader
 
     def train_epoch(self, train_loader, epoch, total_epochs):
-        """Train for one epoch with advanced features and TVM optimization"""
+        """Optimized training with mixed precision"""
         self.model.train()
         total_loss = 0
         
         for i, (X_batch, y_batch) in enumerate(train_loader):
-            X_batch = X_batch.to(self.device)
-            y_batch = y_batch.to(self.device)
+            # Check memory usage
+            if self.get_memory_usage() > self.memory_threshold:
+                torch.cuda.empty_cache()
             
-            # Calculate training progress
+            X_batch = X_batch.to(self.device, non_blocking=True)
+            y_batch = y_batch.to(self.device, non_blocking=True)
+            
             progress = (epoch + i/len(train_loader)) / total_epochs
             
-            if self.use_tvm:
-                # Optimize memory layout for better performance
-                X_batch = optimize_memory_layout(X_batch, layout="NCHW")
+            # Use mixed precision training
+            with amp.autocast():
+                if self.use_tvm:
+                    X_batch = optimize_memory_layout(X_batch, layout="NCHW")
+                
+                self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+                output, reg_loss = self.model(X_batch, progress)
+                loss = self.criterion(output, y_batch, training_progress=progress)
+                total_loss = loss + reg_loss
             
-            # Forward pass with regularization
-            self.optimizer.zero_grad()
-            output, reg_loss = self.model(X_batch, progress)
-            
-            # Calculate loss with enhanced components
-            loss = self.criterion(output, y_batch, training_progress=progress)
-            total_loss = loss + reg_loss
-            
-            # Backward pass with gradient clipping
-            total_loss.backward()
+            # Scaled backward pass
+            self.scaler.scale(total_loss).backward()
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             
         return total_loss.item() / len(train_loader)
 
@@ -181,6 +202,9 @@ class ParallelSSMEnsemble:
             config['n_layer'] = max(2, int(config['n_layer'] + np.random.randint(-1, 2)))
             config['dropout_rate'] = config['dropout_rate'] * (0.8 + 0.4 * np.random.random())
             self.configs.append(config)
+        
+        # Use ThreadPoolExecutor for better thread management
+        self.executor = ThreadPoolExecutor(max_workers=num_models)
     
     def train_model_thread(self, config: Dict, data, args, queue: Queue):
         """Train a single model in a separate thread"""
@@ -202,26 +226,23 @@ class ParallelSSMEnsemble:
             queue.put(e)
     
     def train_parallel(self, data, args):
-        """Train multiple models in parallel"""
-        queue = Queue()
-        threads = []
+        """Optimized parallel training with better resource management"""
+        futures = []
         
-        # Start training threads
+        # Submit tasks to thread pool
         for config in self.configs:
-            thread = threading.Thread(
-                target=self.train_model_thread,
-                args=(config, data, args, queue)
-            )
-            thread.start()
-            threads.append(thread)
+            future = self.executor.submit(self.train_model_thread, config, data, args, Queue())
+            futures.append(future)
         
-        # Collect trained models
-        for thread in threads:
-            result = queue.get()
+        # Collect results
+        for future in futures:
+            result = future.result().get()
             if isinstance(result, Exception):
                 raise result
             self.models.append(result)
-            thread.join()
+        
+    def __del__(self):
+        self.executor.shutdown()
     
     def predict(self, x):
         """Generate ensemble predictions"""
@@ -244,7 +265,7 @@ class ParallelSSMEnsemble:
         return mean_pred, std_pred
 
 def advanced_example():
-    """Example usage of advanced SSM-HIPPO implementation with TVM optimization"""
+    """Optimized example usage"""
     # Configuration with TVM options
     config = {
         'd_model': 128,
@@ -284,6 +305,14 @@ def advanced_example():
     
     # Prepare data
     train_loader, val_loader = model.prepare_data(data, args)
+    
+    # Enable torch backends
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    
+    # Pin memory for faster data transfer
+    train_loader.pin_memory = True
+    val_loader.pin_memory = True
     
     # Training loop with performance monitoring
     import time
