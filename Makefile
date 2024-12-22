@@ -15,3 +15,16 @@ run-inference:
 clean:
 	docker-compose down
 	docker system prune -f
+
+	docker-compose up -d
+
+stop:
+	docker-compose stop
+
+logs:
+	docker-compose logs -f
+
+test:
+	docker-compose run mamba-trainer pytest
+
+.PHONY: dev stop logs test
