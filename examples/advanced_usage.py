@@ -1,5 +1,9 @@
 import torch
 import torch.nn as nn
+import threading
+from queue import Queue
+import torch.multiprocessing as mp
+from typing import List, Dict
 from model.mamba import SSM_HIPPO, ModelArgs
 from model.losses import EnhancedSSMHiPPOLoss
 from model.regularization import AdaptiveRegularization
@@ -162,6 +166,83 @@ class AdvancedSSMHiPPO:
         plt.title('SSM-HIPPO Forecast with Confidence Interval')
         plt.show()
 
+class ParallelSSMEnsemble:
+    def __init__(self, base_config: Dict, num_models: int = 3):
+        self.num_models = num_models
+        self.models: List[AdvancedSSMHiPPO] = []
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Create variations of the base config for ensemble diversity
+        self.configs = []
+        for i in range(num_models):
+            config = base_config.copy()
+            # Vary model architectures slightly
+            config['d_model'] = int(config['d_model'] * (0.8 + 0.4 * np.random.random()))
+            config['n_layer'] = max(2, int(config['n_layer'] + np.random.randint(-1, 2)))
+            config['dropout_rate'] = config['dropout_rate'] * (0.8 + 0.4 * np.random.random())
+            self.configs.append(config)
+    
+    def train_model_thread(self, config: Dict, data, args, queue: Queue):
+        """Train a single model in a separate thread"""
+        try:
+            model = AdvancedSSMHiPPO(config)
+            train_loader, val_loader = model.prepare_data(data, args)
+            
+            # Training loop
+            for epoch in range(3):  # Using same epochs as advanced_example
+                train_loss = model.train_epoch(train_loader, epoch, total_epochs=3)
+                val_loss, metrics = model.evaluate(val_loader)
+                
+                print(f"Model {len(self.models)+1}, Epoch {epoch+1}:")
+                print(f"Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+                print(f"Metrics: MSE = {metrics['mse']:.4f}, MAE = {metrics['mae']:.4f}")
+            
+            queue.put(model)
+        except Exception as e:
+            queue.put(e)
+    
+    def train_parallel(self, data, args):
+        """Train multiple models in parallel"""
+        queue = Queue()
+        threads = []
+        
+        # Start training threads
+        for config in self.configs:
+            thread = threading.Thread(
+                target=self.train_model_thread,
+                args=(config, data, args, queue)
+            )
+            thread.start()
+            threads.append(thread)
+        
+        # Collect trained models
+        for thread in threads:
+            result = queue.get()
+            if isinstance(result, Exception):
+                raise result
+            self.models.append(result)
+            thread.join()
+    
+    def predict(self, x):
+        """Generate ensemble predictions"""
+        predictions = []
+        
+        # Get predictions from each model
+        with torch.no_grad():
+            for model in self.models:
+                pred = model.model(
+                    torch.FloatTensor(x).unsqueeze(0).to(self.device),
+                    training_progress=1.0
+                )[0]
+                predictions.append(pred.cpu().numpy())
+        
+        # Combine predictions (mean and std)
+        predictions = np.array(predictions)
+        mean_pred = np.mean(predictions, axis=0)
+        std_pred = np.std(predictions, axis=0)
+        
+        return mean_pred, std_pred
+
 def advanced_example():
     """Example usage of advanced SSM-HIPPO implementation with TVM optimization"""
     # Configuration with TVM options
@@ -221,5 +302,74 @@ def advanced_example():
     y_true = data[-config['seq_len']-config['forecast_len']:]
     model.plot_forecast(x, y_true, config['forecast_len'])
 
+def ensemble_example():
+    """Example usage of SSM-HIPPO ensemble with parallel training"""
+    # Use the same config from advanced_example
+    config = {
+        'd_model': 128,
+        'n_layer': 4,
+        'seq_len': 96,
+        'num_channels': 1,
+        'patch_len': 16,
+        'stride': 8,
+        'forecast_len': 24,
+        'd_state': 16,
+        'expand': 2,
+        'dt_rank': 'auto',
+        'sigma': 0.5,
+        'reduction_ratio': 4,
+        'dropout_rate': 0.1,
+        'l1_factor': 1e-5,
+        'l2_factor': 1e-4,
+        'loss_alpha': 0.3,
+        'loss_beta': 0.2,
+        'loss_gamma': 0.15,
+        'learning_rate': 0.001,
+        'batch_size': 32,
+        'use_tvm': True,
+        'tvm_opt_level': 3,
+        'tvm_target': None,
+    }
+    
+    # Create and train ensemble
+    ensemble = ParallelSSMEnsemble(config, num_models=3)
+    
+    # Create sample data
+    data = np.random.randn(1000, config['num_channels'])
+    args = type('Args', (), {
+        'input_length': config['seq_len'],
+        'forecast_length': config['forecast_len']
+    })()
+    
+    # Train ensemble
+    print("Training ensemble models in parallel...")
+    ensemble.train_parallel(data, args)
+    
+    # Generate ensemble forecast
+    print("\nGenerating ensemble forecast...")
+    mean_forecast, std_forecast = ensemble.predict(data[-config['seq_len']:])
+    
+    # Plot results with confidence intervals
+    plt.figure(figsize=(12, 6))
+    plt.plot(data[-config['seq_len']:], label='Input', color='blue')
+    plt.plot(range(len(data)-config['forecast_len'], len(data)), 
+            mean_forecast[-config['forecast_len']:], 
+            label='Ensemble Forecast', 
+            color='red')
+    plt.fill_between(
+        range(len(data)-config['forecast_len'], len(data)),
+        mean_forecast[-config['forecast_len']:] - 2*std_forecast[-config['forecast_len']:],
+        mean_forecast[-config['forecast_len']:] + 2*std_forecast[-config['forecast_len']:],
+        color='red', alpha=0.2, label='95% Confidence Interval'
+    )
+    plt.legend()
+    plt.title('SSM-HIPPO Ensemble Forecast')
+    plt.show()
+
 if __name__ == "__main__":
-    advanced_example() 
+    # You can choose which example to run
+    use_ensemble = True
+    if use_ensemble:
+        ensemble_example()
+    else:
+        advanced_example() 
