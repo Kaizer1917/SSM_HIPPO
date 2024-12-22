@@ -1,5 +1,6 @@
 import torch
 from model.mamba import SSM_HIPPO, ModelArgs
+from prepare_data import load_time_series_data
 
 def simple_forecast_example():
     """
@@ -22,8 +23,8 @@ def simple_forecast_example():
     # Initialize model
     model = SSM_HIPPO(args)
     
-    # Create sample input data (batch_size=2, channels=1, sequence_length=96)
-    x = torch.randn(2, 1, 96)
+    # Load real data instead of random values
+    x = load_time_series_data(seq_length=args.seq_len, batch_size=2)
     
     # Generate forecast
     with torch.no_grad():
