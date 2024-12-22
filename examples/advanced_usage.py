@@ -41,6 +41,7 @@ from contextlib import nullcontext
 import time
 from sklearn.model_selection import ParameterGrid
 from sklearn.model_selection import KFold
+from model.ensemble_data import TimeSeriesEnsembleData
 
 class AdvancedSSMHiPPO:
     def __init__(self, config):
@@ -123,17 +124,46 @@ class AdvancedSSMHiPPO:
             else nullcontext()
         )
 
+        # Add ensemble data augmentation
+        self.ensemble_data = TimeSeriesEnsembleData(
+            noise_std=config.get('noise_std', 0.01),
+            time_warp_factor=config.get('time_warp_factor', 0.2),
+            crop_ratio=config.get('crop_ratio', 0.9),
+            jitter_std=config.get('jitter_std', 0.03),
+            max_segments=config.get('max_segments', 5)
+        )
+
     @staticmethod
     def get_memory_usage():
         return psutil.Process().memory_percent()
 
     def prepare_data(self, data, args):
-        """Prepare data with enhanced preprocessing"""
+        """Prepare data with enhanced preprocessing and ensemble augmentation"""
         sequences, targets = enhanced_preprocessing(data, args)
+        
+        # Create initial data loaders
         train_loader, val_loader = create_optimized_dataloaders(
             args, sequences, targets, 
             batch_size=self.config['batch_size']
         )
+        
+        # Apply ensemble data augmentation if enabled
+        if self.config.get('use_ensemble_data', True):
+            # Create augmented training dataset
+            augmented_dataset = self.ensemble_data.create_ensemble_dataset(
+                train_loader,
+                num_augmentations=self.config.get('num_augmentations', 3)
+            )
+            
+            # Create new training loader with augmented data
+            train_loader = torch.utils.data.DataLoader(
+                augmented_dataset,
+                batch_size=self.config['batch_size'],
+                shuffle=True,
+                num_workers=self.config.get('num_workers', 4),
+                pin_memory=True
+            )
+        
         return train_loader, val_loader
 
     def train_epoch(self, train_loader, epoch, total_epochs):
@@ -409,6 +439,14 @@ class AdvancedSSMHiPPO:
         plt.tight_layout()
         plt.show()
 
+    def augment_batch(self, x, y):
+        """Augment a single batch of data using ensemble methods"""
+        return self.ensemble_data.generate_ensemble_data(
+            x.cpu().numpy(), 
+            y.cpu().numpy(),
+            num_augmentations=self.config.get('num_augmentations', 3)
+        )
+
 class ParallelSSMEnsemble:
     def __init__(self, base_config: Dict, num_models: int = 3):
         self.num_models = num_models
@@ -521,6 +559,14 @@ def advanced_example():
         'tvm_target': None,  # Auto-detect optimal target
         'distributed': True,
         'local_rank': 0,  # Set this based on your distributed setup
+        'use_ensemble_data': True,
+        'num_augmentations': 3,
+        'noise_std': 0.01,
+        'time_warp_factor': 0.2,
+        'crop_ratio': 0.9,
+        'jitter_std': 0.03,
+        'max_segments': 5,
+        'num_workers': 4
     }
     
     # Initialize distributed training
@@ -615,6 +661,14 @@ def ensemble_example():
             'tvm_target': None,
             'distributed': True,
             'local_rank': 0,  # Set this based on your distributed setup
+            'use_ensemble_data': True,
+            'num_augmentations': 3,
+            'noise_std': 0.01,
+            'time_warp_factor': 0.2,
+            'crop_ratio': 0.9,
+            'jitter_std': 0.03,
+            'max_segments': 5,
+            'num_workers': 4
         }
         
         # Initialize distributed training
