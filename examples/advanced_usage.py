@@ -40,6 +40,7 @@ import torch.distributed as dist
 from contextlib import nullcontext
 import time
 from sklearn.model_selection import ParameterGrid
+from sklearn.model_selection import KFold
 
 class AdvancedSSMHiPPO:
     def __init__(self, config):
@@ -284,27 +285,69 @@ class AdvancedSSMHiPPO:
         
         return {k: np.mean(v) for k, v in metrics.items()}
 
-    def optimize_hyperparameters(self, train_data, val_data, param_grid):
-        """Optimize hyperparameters using grid search"""
+    def optimize_hyperparameters(self, train_data, val_data, param_grid, n_splits=5):
+        """Optimize hyperparameters using grid search with k-fold cross validation
+        
+        Args:
+            train_data: Training data
+            val_data: Validation data 
+            param_grid: Dictionary of parameters to search
+            n_splits: Number of cross-validation folds
+        
+        Returns:
+            best_params: Dictionary of best parameters
+            best_val_loss: Best validation loss achieved
+        """
         best_val_loss = float('inf')
         best_params = None
         
+        # Create k-fold cross validator
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        
         for params in ParameterGrid(param_grid):
-            # Update model configuration
-            self.config.update(params)
-            self.model = self._initialize_model()
+            cv_losses = []
             
-            # Train model with current parameters
-            train_loader, val_loader = self.prepare_data(train_data, val_data)
-            for epoch in range(3):
-                self.train_epoch(train_loader, epoch, 3)
+            # Perform k-fold cross validation for each parameter set
+            for fold, (train_idx, val_idx) in enumerate(kf.split(train_data)):
+                # Split data for this fold
+                fold_train = train_data[train_idx]
+                fold_val = train_data[val_idx]
+                
+                # Update model configuration
+                self.config.update(params)
+                self.model = self._initialize_model()
+                
+                # Prepare data for this fold
+                train_loader, val_loader = self.prepare_data(fold_train, fold_val)
+                
+                # Train model with current parameters
+                for epoch in range(3):  # Quick training for each fold
+                    self.train_epoch(train_loader, epoch, 3)
+                
+                # Evaluate performance
+                val_loss, _ = self.evaluate(val_loader)
+                cv_losses.append(val_loss)
             
-            # Evaluate performance
-            val_loss, _ = self.evaluate(val_loader)
+            # Calculate mean cross-validation loss
+            mean_cv_loss = np.mean(cv_losses)
             
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            # Update best parameters if we found better ones
+            if mean_cv_loss < best_val_loss:
+                best_val_loss = mean_cv_loss
                 best_params = params
+                print(f"New best parameters found: {best_params}")
+                print(f"Cross-validation loss: {best_val_loss:.4f}")
+        
+        # Final evaluation on held-out validation set
+        self.config.update(best_params)
+        self.model = self._initialize_model()
+        _, final_val_loader = self.prepare_data(train_data, val_data)
+        final_val_loss, _ = self.evaluate(final_val_loader)
+        
+        print(f"\nFinal Results:")
+        print(f"Best parameters: {best_params}")
+        print(f"Cross-validation loss: {best_val_loss:.4f}")
+        print(f"Final validation loss: {final_val_loss:.4f}")
         
         return best_params, best_val_loss
 
