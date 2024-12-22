@@ -7,7 +7,20 @@ from typing import List, Dict
 from model.mamba import SSM_HIPPO, ModelArgs
 from model.losses import EnhancedSSMHiPPOLoss
 from model.regularization import AdaptiveRegularization
-from model.prepare_data import enhanced_preprocessing, create_optimized_dataloaders
+from model.prepare_data import (
+    load_and_preprocess_data,
+    create_sequences,
+    normalize_data,
+    split_data,
+    create_data_loaders
+)
+from model.train import (
+    train_model,
+    validate_model,
+    EarlyStopping,
+    LRScheduler,
+    TrainingLogger
+)
 import numpy as np
 import matplotlib.pyplot as plt
 from model.mamba_tvm import SSMHippoModule
@@ -474,40 +487,60 @@ def advanced_example():
     # Initialize model with TVM optimization
     model = AdvancedSSMHiPPO(config)
     
-    # Create sample data
-    data = np.random.randn(1000, config['num_channels'])
-    args = type('Args', (), {
-        'input_length': config['seq_len'],
-        'forecast_length': config['forecast_len']
-    })()
-    
-    # Prepare data
-    train_loader, val_loader = model.prepare_data(data, args)
-    
-    # Enable torch backends
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-    
-    # Pin memory for faster data transfer
-    train_loader.pin_memory = True
-    val_loader.pin_memory = True
-    
-    # Training loop with performance monitoring
-    import time
-    for epoch in range(3):
-        start_time = time.time()
-        train_loss = model.train_epoch(train_loader, epoch, total_epochs=3)
-        val_loss, metrics = model.evaluate(val_loader)
-        epoch_time = time.time() - start_time
+    # Load and prepare data using functions from prepare_data.py
+    raw_data = load_and_preprocess_data(data_path='path/to/data')
+    normalized_data = normalize_data(raw_data)
+    sequences = create_sequences(
+        normalized_data,
+        seq_length=config['seq_len'],
+        forecast_length=config['forecast_len']
+    )
+    train_data, val_data = split_data(sequences, split_ratio=0.8)
+    train_loader, val_loader = create_data_loaders(
+        train_data,
+        val_data,
+        batch_size=config['batch_size']
+    )
+
+    # Initialize training components from train.py
+    early_stopping = EarlyStopping(patience=5, min_delta=1e-4)
+    lr_scheduler = LRScheduler(model.optimizer, mode='min', patience=3)
+    logger = TrainingLogger()
+
+    # Training loop with components from train.py
+    for epoch in range(config['epochs']):
+        train_metrics = train_model(
+            model=model,
+            train_loader=train_loader,
+            criterion=model.criterion,
+            optimizer=model.optimizer,
+            device=model.device,
+            scaler=model.scaler,
+            epoch=epoch
+        )
         
-        print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
-        print(f"Metrics: MSE = {metrics['mse']:.4f}, MAE = {metrics['mae']:.4f}")
-        print(f"Epoch time: {epoch_time:.2f} seconds")
-    
-    # Plot example forecast
-    x = data[-config['seq_len']:]
-    y_true = data[-config['seq_len']-config['forecast_len']:]
-    model.plot_forecast(x, y_true, config['forecast_len'])
+        val_metrics = validate_model(
+            model=model,
+            val_loader=val_loader,
+            criterion=model.criterion,
+            device=model.device
+        )
+        
+        # Update learning rate and check early stopping
+        lr_scheduler.step(val_metrics['loss'])
+        if early_stopping.step(val_metrics['loss']):
+            print("Early stopping triggered")
+            break
+            
+        # Log metrics
+        logger.log_metrics(epoch, train_metrics, val_metrics)
+        
+        # Save checkpoint if best model
+        if early_stopping.is_best():
+            save_checkpoint(model, model.optimizer, epoch, 'best_model.pt')
+
+    # Plot training history
+    logger.plot_metrics()
 
 def ensemble_example():
     """Example usage of SSM-HIPPO ensemble with parallel training"""
