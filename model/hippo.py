@@ -280,26 +280,19 @@ def nplr(measure, N, rank=1, dtype=torch.float, diagonalize_precision=True, B_cl
     return W, P, B, V
 
 def optimize_hippo_transition(measure, N, training_progress, device):
-    """Dynamically optimizes HiPPO transition matrices during training"""
+    """Optimized HiPPO transition matrices with dynamic scaling"""
     A, B = transition(measure, N)
-    
-    # Convert to torch tensors
-    A = torch.as_tensor(A, dtype=torch.float, device=device)
-    B = torch.as_tensor(B, dtype=torch.float, device=device)
+    A = torch.as_tensor(A, dtype=torch.float32, device=device)
+    B = torch.as_tensor(B, dtype=torch.float32, device=device)
     
     # Dynamic scaling based on training progress
-    progress_factor = torch.sigmoid(torch.tensor(training_progress * 10 - 5))
+    progress_factor = torch.sigmoid(torch.tensor(training_progress * 10 - 5, device=device))
     
+    # Optimize based on measure type
     if measure == 'legs':
-        # Optimize Legendre-based transitions
         scale = torch.exp(-progress_factor * torch.arange(N, device=device) / N)
         A = A * scale.unsqueeze(0)
         B = B * scale.unsqueeze(1)
-    
-    elif measure == 'fourier':
-        # Optimize Fourier-based transitions
-        freq_scale = 1.0 + progress_factor * (torch.arange(N, device=device) / N)
-        A = A * freq_scale.unsqueeze(0)
     
     # Add stability regularization
     A = A - torch.eye(N, device=device) * 0.1 * (1 - progress_factor)
