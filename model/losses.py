@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 class EnhancedSSMHiPPOLoss(nn.Module):
     def __init__(self, alpha=0.3, beta=0.2, gamma=0.15):
@@ -37,7 +38,14 @@ class EnhancedSSMHiPPOLoss(nn.Module):
             temp_loss = F.mse_loss(temp_diff_pred, temp_diff_target)
             temp_losses.append(temp_loss)
         
-        temporal_loss = sum(temp_losses) / len(scales)
+        # Add gradient-based regularization
+        if training_progress is not None:
+            grad_scale = torch.exp(-5 * training_progress)  # Decrease over time
+            pred.register_hook(lambda grad: grad * grad_scale)
+        
+        # Use weighted temporal loss
+        temp_weights = torch.exp(-torch.arange(len(scales), device=pred.device) / 2)
+        temporal_loss = sum(w * l for w, l in zip(temp_weights, temp_losses)) / temp_weights.sum()
         
         # 4. Enhanced frequency domain analysis
         # Apply FFT with Hann window for better frequency resolution
@@ -49,6 +57,10 @@ class EnhancedSSMHiPPOLoss(nn.Module):
         amp_loss = F.mse_loss(pred_fft.abs(), target_fft.abs())
         phase_loss = F.mse_loss(torch.angle(pred_fft), torch.angle(target_fft))
         freq_loss = 0.7 * amp_loss + 0.3 * phase_loss
+        
+        # Adaptive frequency loss weight
+        freq_weight = 0.3 * (1 + torch.sin(math.pi * training_progress))
+        freq_loss = freq_loss * freq_weight
         
         # 5. State space consistency loss
         if pred.size(1) > 1:
