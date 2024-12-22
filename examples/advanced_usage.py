@@ -21,6 +21,10 @@ import torch.nn.functional as F
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 import psutil
+from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from contextlib import nullcontext
 
 class AdvancedSSMHiPPO:
     def __init__(self, config):
@@ -88,6 +92,21 @@ class AdvancedSSMHiPPO:
         # Optimize memory usage
         self.memory_threshold = 0.9  # 90% memory usage threshold
 
+        # Add distributed training support
+        self.distributed = config.get('distributed', False)
+        if self.distributed:
+            self.local_rank = config.get('local_rank', 0)
+            torch.cuda.set_device(self.local_rank)
+            dist.init_process_group(backend='nccl')
+            self.model = DDP(self.model, device_ids=[self.local_rank])
+
+        # Use automatic mixed precision context
+        self.amp_context = (
+            amp.autocast(device_type='cuda', dtype=torch.float16)
+            if torch.cuda.is_available()
+            else nullcontext()
+        )
+
     @staticmethod
     def get_memory_usage():
         return psutil.Process().memory_percent()
@@ -102,37 +121,43 @@ class AdvancedSSMHiPPO:
         return train_loader, val_loader
 
     def train_epoch(self, train_loader, epoch, total_epochs):
-        """Optimized training with mixed precision"""
+        """Optimized training with mixed precision and distributed training"""
         self.model.train()
         total_loss = 0
         
-        for i, (X_batch, y_batch) in enumerate(train_loader):
-            # Check memory usage
-            if self.get_memory_usage() > self.memory_threshold:
-                torch.cuda.empty_cache()
+        # Use tqdm for progress tracking
+        from tqdm import tqdm
+        progress_bar = tqdm(train_loader, desc=f'Epoch {epoch}')
+        
+        for i, (X_batch, y_batch) in enumerate(progress_bar):
+            # Prefetch next batch using non-blocking transfer
+            if i + 1 < len(train_loader):
+                next_batch = next(iter(train_loader))
+                next_X = next_batch[0].to(self.device, non_blocking=True)
+                next_y = next_batch[1].to(self.device, non_blocking=True)
             
             X_batch = X_batch.to(self.device, non_blocking=True)
             y_batch = y_batch.to(self.device, non_blocking=True)
             
-            progress = (epoch + i/len(train_loader)) / total_epochs
-            
-            # Use mixed precision training
-            with amp.autocast():
+            # Use mixed precision training context
+            with self.amp_context:
                 if self.use_tvm:
                     X_batch = optimize_memory_layout(X_batch, layout="NCHW")
                 
-                self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
-                output, reg_loss = self.model(X_batch, progress)
-                loss = self.criterion(output, y_batch, training_progress=progress)
+                self.optimizer.zero_grad(set_to_none=True)
+                output, reg_loss = self.model(X_batch, (epoch + i/len(train_loader)) / total_epochs)
+                loss = self.criterion(output, y_batch)
                 total_loss = loss + reg_loss
             
-            # Scaled backward pass
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             
+            # Update progress bar
+            progress_bar.set_postfix({'loss': total_loss.item()})
+
         return total_loss.item() / len(train_loader)
 
     def evaluate(self, val_loader):
@@ -205,44 +230,34 @@ class ParallelSSMEnsemble:
         
         # Use ThreadPoolExecutor for better thread management
         self.executor = ThreadPoolExecutor(max_workers=num_models)
+        
+        # Add multiprocessing pool for true parallel processing
+        self.pool = mp.Pool(processes=min(num_models, mp.cpu_count()))
     
-    def train_model_thread(self, config: Dict, data, args, queue: Queue):
-        """Train a single model in a separate thread"""
-        try:
-            model = AdvancedSSMHiPPO(config)
-            train_loader, val_loader = model.prepare_data(data, args)
-            
-            # Training loop
-            for epoch in range(3):  # Using same epochs as advanced_example
-                train_loss = model.train_epoch(train_loader, epoch, total_epochs=3)
-                val_loss, metrics = model.evaluate(val_loader)
-                
-                print(f"Model {len(self.models)+1}, Epoch {epoch+1}:")
-                print(f"Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
-                print(f"Metrics: MSE = {metrics['mse']:.4f}, MAE = {metrics['mae']:.4f}")
-            
-            queue.put(model)
-        except Exception as e:
-            queue.put(e)
+    def train_model_process(self, config: Dict, data, args):
+        """Train a single model in a separate process"""
+        torch.set_num_threads(1)  # Prevent thread oversubscription
+        model = AdvancedSSMHiPPO(config)
+        train_loader, val_loader = model.prepare_data(data, args)
+        
+        for epoch in range(3):
+            train_loss = model.train_epoch(train_loader, epoch, total_epochs=3)
+            val_loss, metrics = model.evaluate(val_loader)
+        
+        return model
     
     def train_parallel(self, data, args):
-        """Optimized parallel training with better resource management"""
-        futures = []
-        
-        # Submit tasks to thread pool
-        for config in self.configs:
-            future = self.executor.submit(self.train_model_thread, config, data, args, Queue())
-            futures.append(future)
-        
-        # Collect results
-        for future in futures:
-            result = future.result().get()
-            if isinstance(result, Exception):
-                raise result
-            self.models.append(result)
-        
+        """Optimized parallel training using multiprocessing"""
+        # Use Pool.starmap for parallel processing
+        models = self.pool.starmap(
+            self.train_model_process,
+            [(config, data, args) for config in self.configs]
+        )
+        self.models.extend(models)
+    
     def __del__(self):
-        self.executor.shutdown()
+        self.pool.close()
+        self.pool.join()
     
     def predict(self, x):
         """Generate ensemble predictions"""
@@ -291,7 +306,13 @@ def advanced_example():
         'use_tvm': True,  # Enable TVM optimization
         'tvm_opt_level': 3,  # TVM optimization level
         'tvm_target': None,  # Auto-detect optimal target
+        'distributed': True,
+        'local_rank': 0,  # Set this based on your distributed setup
     }
+    
+    # Initialize distributed training
+    if config['distributed']:
+        torch.distributed.init_process_group(backend='nccl')
     
     # Initialize model with TVM optimization
     model = AdvancedSSMHiPPO(config)
@@ -358,7 +379,13 @@ def ensemble_example():
         'use_tvm': True,
         'tvm_opt_level': 3,
         'tvm_target': None,
+        'distributed': True,
+        'local_rank': 0,  # Set this based on your distributed setup
     }
+    
+    # Initialize distributed training
+    if config['distributed']:
+        torch.distributed.init_process_group(backend='nccl')
     
     # Create and train ensemble
     ensemble = ParallelSSMEnsemble(config, num_models=3)
