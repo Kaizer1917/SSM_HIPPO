@@ -1,6 +1,7 @@
 import torch
 from model.mamba import SSM_HIPPO, ModelArgs
-from prepare_data import load_time_series_data
+from prepare_data import load_time_series_data, TimeSeriesDataset
+from train import train_model
 
 def simple_forecast_example():
     """
@@ -8,22 +9,42 @@ def simple_forecast_example():
     """
     # Define model parameters
     args = ModelArgs(
-        d_model=128,          # Model dimension
-        n_layer=4,            # Number of layers
-        seq_len=96,           # Input sequence length
-        num_channels=1,       # Number of input features
-        patch_len=16,         # Length of each patch
-        stride=8,             # Stride between patches
-        forecast_len=24,      # Number of steps to forecast
-        d_state=16,          # State dimension
-        expand=2,            # Expansion factor
-        dt_rank='auto'       # Rank for delta projection
+        d_model=128,          
+        n_layer=4,            
+        seq_len=96,           
+        num_channels=1,       
+        patch_len=16,         
+        stride=8,             
+        forecast_len=24,      
+        d_state=16,          
+        expand=2,            
+        dt_rank='auto'       
     )
 
     # Initialize model
     model = SSM_HIPPO(args)
     
-    # Load real data instead of random values
+    # Load and prepare training data
+    train_dataset = TimeSeriesDataset(
+        seq_length=args.seq_len,
+        forecast_length=args.forecast_len
+    )
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, 
+        batch_size=32,
+        shuffle=True
+    )
+    
+    # Train the model
+    train_model(
+        model=model,
+        train_loader=train_loader,
+        epochs=10,
+        learning_rate=1e-4,
+        device='cuda' if torch.cuda.is_available() else 'cpu'
+    )
+    
+    # Load test data for inference
     x = load_time_series_data(seq_length=args.seq_len, batch_size=2)
     
     # Generate forecast
