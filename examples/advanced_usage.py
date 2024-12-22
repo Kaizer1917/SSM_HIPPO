@@ -25,6 +25,8 @@ from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from contextlib import nullcontext
+import time
+from sklearn.model_selection import ParameterGrid
 
 class AdvancedSSMHiPPO:
     def __init__(self, config):
@@ -130,11 +132,14 @@ class AdvancedSSMHiPPO:
         progress_bar = tqdm(train_loader, desc=f'Epoch {epoch}')
         
         for i, (X_batch, y_batch) in enumerate(progress_bar):
-            # Prefetch next batch using non-blocking transfer
-            if i + 1 < len(train_loader):
-                next_batch = next(iter(train_loader))
-                next_X = next_batch[0].to(self.device, non_blocking=True)
-                next_y = next_batch[1].to(self.device, non_blocking=True)
+            # Fix: Move prefetching inside try-except to handle StopIteration
+            try:
+                if i + 1 < len(train_loader):
+                    next_batch = next(iter(train_loader))
+                    next_X = next_batch[0].to(self.device, non_blocking=True)
+                    next_y = next_batch[1].to(self.device, non_blocking=True)
+            except StopIteration:
+                pass
             
             X_batch = X_batch.to(self.device, non_blocking=True)
             y_batch = y_batch.to(self.device, non_blocking=True)
@@ -212,11 +217,155 @@ class AdvancedSSMHiPPO:
         plt.title('SSM-HIPPO Forecast with Confidence Interval')
         plt.show()
 
+    def plot_attention_weights(self, x):
+        """Visualize attention weights across layers"""
+        self.model.eval()
+        with torch.no_grad():
+            x = torch.FloatTensor(x).unsqueeze(0).to(self.device)
+            attention_weights = self.model.get_attention_weights(x)
+            
+            plt.figure(figsize=(15, 5 * len(attention_weights)))
+            for i, weights in enumerate(attention_weights):
+                plt.subplot(len(attention_weights), 1, i + 1)
+                plt.imshow(weights.cpu().numpy(), aspect='auto')
+                plt.colorbar()
+                plt.title(f'Layer {i+1} Attention Weights')
+            plt.tight_layout()
+            plt.show()
+
+    def plot_feature_importance(self, x, feature_names=None):
+        """Analyze and visualize feature importance"""
+        importances = self.model.calculate_feature_importance(x)
+        plt.figure(figsize=(10, 6))
+        plt.bar(range(len(importances)), importances)
+        if feature_names:
+            plt.xticks(range(len(importances)), feature_names, rotation=45)
+        plt.title('Feature Importance Analysis')
+        plt.show()
+
+    def analyze_performance(self, val_loader):
+        """Comprehensive performance analysis"""
+        metrics = {
+            'mse': [],
+            'mae': [],
+            'rmse': [],
+            'mape': [],
+            'latency': []
+        }
+        
+        self.model.eval()
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                start_time = time.time()
+                output, _ = self.model(X_batch.to(self.device), 1.0)
+                latency = time.time() - start_time
+                
+                pred = output.cpu().numpy()
+                true = y_batch.numpy()
+                
+                metrics['mse'].append(np.mean((pred - true) ** 2))
+                metrics['mae'].append(np.mean(np.abs(pred - true)))
+                metrics['rmse'].append(np.sqrt(np.mean((pred - true) ** 2)))
+                metrics['mape'].append(np.mean(np.abs((true - pred) / true)) * 100)
+                metrics['latency'].append(latency)
+        
+        return {k: np.mean(v) for k, v in metrics.items()}
+
+    def optimize_hyperparameters(self, train_data, val_data, param_grid):
+        """Optimize hyperparameters using grid search"""
+        best_val_loss = float('inf')
+        best_params = None
+        
+        for params in ParameterGrid(param_grid):
+            # Update model configuration
+            self.config.update(params)
+            self.model = self._initialize_model()
+            
+            # Train model with current parameters
+            train_loader, val_loader = self.prepare_data(train_data, val_data)
+            for epoch in range(3):
+                self.train_epoch(train_loader, epoch, 3)
+            
+            # Evaluate performance
+            val_loss, _ = self.evaluate(val_loader)
+            
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_params = params
+        
+        return best_params, best_val_loss
+
+    def augment_data(self, x, y):
+        """Apply various data augmentation techniques"""
+        augmented_x, augmented_y = [], []
+        
+        # Time warping
+        def time_warp(seq, sigma=0.2):
+            t = np.arange(len(seq))
+            t_new = t + np.random.normal(0, sigma, size=len(t))
+            return np.interp(t, t_new, seq)
+        
+        # Magnitude warping
+        def magnitude_warp(seq, sigma=0.2):
+            return seq * (1 + np.random.normal(0, sigma))
+        
+        # Apply augmentations
+        for xi, yi in zip(x, y):
+            # Original data
+            augmented_x.append(xi)
+            augmented_y.append(yi)
+            
+            # Time warped version
+            augmented_x.append(time_warp(xi))
+            augmented_y.append(yi)
+            
+            # Magnitude warped version
+            augmented_x.append(magnitude_warp(xi))
+            augmented_y.append(yi)
+        
+        return np.array(augmented_x), np.array(augmented_y)
+
+    def interpret_predictions(self, x, y_true):
+        """Generate interpretation of model predictions"""
+        self.model.eval()
+        with torch.no_grad():
+            x_tensor = torch.FloatTensor(x).unsqueeze(0).to(self.device)
+            output, attention = self.model(x_tensor, return_attention=True)
+            prediction = output.cpu().numpy()[0]
+        
+        # Calculate feature attributions
+        attributions = self.calculate_feature_attributions(x, prediction)
+        
+        # Plot results
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        
+        # Plot predictions vs actual
+        ax1.plot(y_true, label='Actual', color='blue')
+        ax1.plot(prediction, label='Predicted', color='red')
+        ax1.set_title('Predictions vs Actual')
+        ax1.legend()
+        
+        # Plot feature attributions
+        im = ax2.imshow(attributions.T, aspect='auto', cmap='RdBu')
+        ax2.set_title('Feature Attributions')
+        plt.colorbar(im)
+        
+        plt.tight_layout()
+        plt.show()
+
 class ParallelSSMEnsemble:
     def __init__(self, base_config: Dict, num_models: int = 3):
         self.num_models = num_models
         self.models: List[AdvancedSSMHiPPO] = []
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()  # Clear GPU memory
+        
+        # Fix: Initialize multiprocessing with proper start method
+        try:
+            mp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass
         
         # Create variations of the base config for ensemble diversity
         self.configs = []
@@ -236,15 +385,23 @@ class ParallelSSMEnsemble:
     
     def train_model_process(self, config: Dict, data, args):
         """Train a single model in a separate process"""
-        torch.set_num_threads(1)  # Prevent thread oversubscription
-        model = AdvancedSSMHiPPO(config)
-        train_loader, val_loader = model.prepare_data(data, args)
-        
-        for epoch in range(3):
-            train_loss = model.train_epoch(train_loader, epoch, total_epochs=3)
-            val_loss, metrics = model.evaluate(val_loader)
-        
-        return model
+        # Fix: Add proper error handling and GPU memory management
+        try:
+            torch.set_num_threads(1)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            model = AdvancedSSMHiPPO(config)
+            train_loader, val_loader = model.prepare_data(data, args)
+            
+            for epoch in range(3):
+                train_loss = model.train_epoch(train_loader, epoch, total_epochs=3)
+                val_loss, metrics = model.evaluate(val_loader)
+            
+            return model
+        except Exception as e:
+            print(f"Error in training process: {str(e)}")
+            return None
     
     def train_parallel(self, data, args):
         """Optimized parallel training using multiprocessing"""
@@ -354,73 +511,99 @@ def advanced_example():
 
 def ensemble_example():
     """Example usage of SSM-HIPPO ensemble with parallel training"""
-    # Use the same config from advanced_example
-    config = {
-        'd_model': 128,
-        'n_layer': 4,
-        'seq_len': 96,
-        'num_channels': 1,
-        'patch_len': 16,
-        'stride': 8,
-        'forecast_len': 24,
-        'd_state': 16,
-        'expand': 2,
-        'dt_rank': 'auto',
-        'sigma': 0.5,
-        'reduction_ratio': 4,
-        'dropout_rate': 0.1,
-        'l1_factor': 1e-5,
-        'l2_factor': 1e-4,
-        'loss_alpha': 0.3,
-        'loss_beta': 0.2,
-        'loss_gamma': 0.15,
-        'learning_rate': 0.001,
-        'batch_size': 32,
-        'use_tvm': True,
-        'tvm_opt_level': 3,
-        'tvm_target': None,
-        'distributed': True,
-        'local_rank': 0,  # Set this based on your distributed setup
+    try:
+        # Use the same config from advanced_example
+        config = {
+            'd_model': 128,
+            'n_layer': 4,
+            'seq_len': 96,
+            'num_channels': 1,
+            'patch_len': 16,
+            'stride': 8,
+            'forecast_len': 24,
+            'd_state': 16,
+            'expand': 2,
+            'dt_rank': 'auto',
+            'sigma': 0.5,
+            'reduction_ratio': 4,
+            'dropout_rate': 0.1,
+            'l1_factor': 1e-5,
+            'l2_factor': 1e-4,
+            'loss_alpha': 0.3,
+            'loss_beta': 0.2,
+            'loss_gamma': 0.15,
+            'learning_rate': 0.001,
+            'batch_size': 32,
+            'use_tvm': True,
+            'tvm_opt_level': 3,
+            'tvm_target': None,
+            'distributed': True,
+            'local_rank': 0,  # Set this based on your distributed setup
+        }
+        
+        # Initialize distributed training
+        if config['distributed']:
+            torch.distributed.init_process_group(backend='nccl')
+        
+        # Create and train ensemble
+        ensemble = ParallelSSMEnsemble(config, num_models=3)
+        
+        # Create sample data
+        data = np.random.randn(1000, config['num_channels'])
+        args = type('Args', (), {
+            'input_length': config['seq_len'],
+            'forecast_length': config['forecast_len']
+        })()
+        
+        # Train ensemble
+        print("Training ensemble models in parallel...")
+        ensemble.train_parallel(data, args)
+        
+        # Generate ensemble forecast
+        print("\nGenerating ensemble forecast...")
+        mean_forecast, std_forecast = ensemble.predict(data[-config['seq_len']:])
+        
+        # Plot results with confidence intervals
+        plt.figure(figsize=(12, 6))
+        plt.plot(data[-config['seq_len']:], label='Input', color='blue')
+        plt.plot(range(len(data)-config['forecast_len'], len(data)), 
+                mean_forecast[-config['forecast_len']:], 
+                label='Ensemble Forecast', 
+                color='red')
+        plt.fill_between(
+            range(len(data)-config['forecast_len'], len(data)),
+            mean_forecast[-config['forecast_len']:] - 2*std_forecast[-config['forecast_len']:],
+            mean_forecast[-config['forecast_len']:] + 2*std_forecast[-config['forecast_len']:],
+            color='red', alpha=0.2, label='95% Confidence Interval'
+        )
+        plt.legend()
+        plt.title('SSM-HIPPO Ensemble Forecast')
+        plt.show()
+        
+    finally:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        # Cleanup multiprocessing resources
+        ensemble.pool.close()
+        ensemble.pool.join()
+
+def save_checkpoint(model, optimizer, epoch, filename):
+    """Save model checkpoint with additional training info"""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'config': model.config
     }
-    
-    # Initialize distributed training
-    if config['distributed']:
-        torch.distributed.init_process_group(backend='nccl')
-    
-    # Create and train ensemble
-    ensemble = ParallelSSMEnsemble(config, num_models=3)
-    
-    # Create sample data
-    data = np.random.randn(1000, config['num_channels'])
-    args = type('Args', (), {
-        'input_length': config['seq_len'],
-        'forecast_length': config['forecast_len']
-    })()
-    
-    # Train ensemble
-    print("Training ensemble models in parallel...")
-    ensemble.train_parallel(data, args)
-    
-    # Generate ensemble forecast
-    print("\nGenerating ensemble forecast...")
-    mean_forecast, std_forecast = ensemble.predict(data[-config['seq_len']:])
-    
-    # Plot results with confidence intervals
-    plt.figure(figsize=(12, 6))
-    plt.plot(data[-config['seq_len']:], label='Input', color='blue')
-    plt.plot(range(len(data)-config['forecast_len'], len(data)), 
-            mean_forecast[-config['forecast_len']:], 
-            label='Ensemble Forecast', 
-            color='red')
-    plt.fill_between(
-        range(len(data)-config['forecast_len'], len(data)),
-        mean_forecast[-config['forecast_len']:] - 2*std_forecast[-config['forecast_len']:],
-        mean_forecast[-config['forecast_len']:] + 2*std_forecast[-config['forecast_len']:],
-        color='red', alpha=0.2, label='95% Confidence Interval'
-    )
-    plt.legend()
-    plt.title('SSM-HIPPO Ensemble Forecast')
-    plt.show()
+    torch.save(checkpoint, filename)
+
+def load_checkpoint(filename, device='cuda'):
+    """Load model from checkpoint"""
+    checkpoint = torch.load(filename, map_location=device)
+    config = checkpoint['config']
+    model = AdvancedSSMHiPPO(config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    return model, checkpoint
 
 if __name__ == "__main__":
     # You can choose which example to run
