@@ -4,7 +4,8 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
+from prefetch_generator import BackgroundGenerator
 
 def create_sequences(data, input_length, forecast_length):
     sequences = []
@@ -97,43 +98,44 @@ def main(args):
     np.savez(args.output_file, X_train=X_train, X_test=X_test, y_train=y_train, y_test=y_test)
     print(f"Data saved to {args.output_file}")
 
-class TimeSeriesDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences, targets, device=None):
-        self.sequences = torch.from_numpy(sequences).float()
-        self.targets = torch.from_numpy(targets).float()
-        if device:
-            self.sequences = self.sequences.to(device)
-            self.targets = self.targets.to(device)
-            
-    def __len__(self):
-        return len(self.sequences)
+class OptimizedDataset(Dataset):
+    def __init__(self, data, sequence_length):
+        self.data = torch.FloatTensor(data)
+        self.sequence_length = sequence_length
         
+        # Pre-calculate indices
+        self.valid_indices = torch.arange(
+            self.sequence_length, 
+            len(self.data) - self.sequence_length
+        )
+        
+        if torch.cuda.is_available():
+            self.data = self.data.pin_memory()
+    
     def __getitem__(self, idx):
-        return self.sequences[idx], self.targets[idx]
+        real_idx = self.valid_indices[idx]
+        sequence = self.data[real_idx-self.sequence_length:real_idx]
+        target = self.data[real_idx:real_idx+self.sequence_length]
+        return sequence, target
+    
+    def __len__(self):
+        return len(self.valid_indices)
 
-def create_optimized_dataloaders(args, X_train, X_test, y_train, y_test):
-    # Pin memory for faster data transfer to GPU
-    train_dataset = TimeSeriesDataset(X_train, y_train)
-    test_dataset = TimeSeriesDataset(X_test, y_test)
-    
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
+def create_optimized_dataloaders(args, dataset, batch_size=32):
+    train_loader = DataLoaderX(
+        dataset,
+        batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
         num_workers=4,
-        persistent_workers=True
-    )
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
         pin_memory=True,
-        num_workers=4,
-        persistent_workers=True
+        persistent_workers=True,
+        prefetch_factor=2
     )
-    
-    return train_loader, test_loader
+    return train_loader
+
+class DataLoaderX(DataLoader):
+    def __iter__(self):
+        return BackgroundGenerator(super().__iter__())
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data preparation script for time series forecasting.")
