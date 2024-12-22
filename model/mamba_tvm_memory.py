@@ -1,30 +1,23 @@
 import tvm
+from functools import lru_cache
 
 def optimize_memory_layout(x, layout="NCHW"):
-    """Optimize tensor memory layout.
+    """Optimize tensor memory layout with caching"""
+    @lru_cache(maxsize=32)
+    def get_optimized_layout(shape, layout_type):
+        if layout_type == "NCHW":
+            return tvm.te.compute(
+                shape,
+                lambda n, c, h, w: x[n, c, h, w],
+                name="optimized_layout",
+                attrs={"layout": layout_type}
+            )
     
-    Args:
-        x: tvm.te.Tensor, Input tensor to optimize
-        layout: str, Memory layout to use ('NCHW' supported)
+    # Use cached layout if available
+    opt_layout = get_optimized_layout(tuple(x.shape), layout)
     
-    Returns:
-        tvm.te.Tensor: Optimized tensor with specified memory layout
-        
-    Raises:
-        ValueError: If layout is not supported or input is invalid
-    """
-    if not isinstance(x, tvm.te.Tensor):
-        raise ValueError("Input must be a TVM tensor")
-        
-    supported_layouts = ["NCHW"]
-    if layout not in supported_layouts:
-        raise ValueError(f"Unsupported layout: {layout}. Supported layouts: {supported_layouts}")
-
-    if layout == "NCHW":
-        return tvm.te.compute(
-            x.shape,
-            lambda n, c, h, w: x[n, c, h, w],
-            name="optimized_layout"
-        )
-    # Add more layouts as needed
-    return x
+    # Add memory pool for better allocation
+    with tvm.transform.PassContext(opt_level=3):
+        opt_layout = tvm.tir.transform.StorageRewrite()(opt_layout)
+    
+    return opt_layout
