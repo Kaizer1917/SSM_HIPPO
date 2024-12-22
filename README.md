@@ -19,6 +19,16 @@
   - Implements NPLR (Normal Plus Low-Rank) form of HiPPO matrices
   - Efficient state-space computations with selective scanning
   - Supports multiple measure types (legs, legt, fourier, etc.)
+- **Advanced Training Features**:
+  - Gradient accumulation for large batch training
+  - Mixed precision training support
+  - Distributed training capabilities
+  - Custom learning rate scheduling
+- **Model Optimization**:
+  - Model pruning and quantization options
+  - Memory-efficient inference
+  - ONNX export support
+  - TorchScript compatibility
 
 ## Installation
 
@@ -113,5 +123,43 @@ chmod +x scripts/train.sh
 ```
 
 This command will train the SSM_HIPPO model using the provided parameters and log the training process to WandB.
+
+### Training Script Arguments
+
+Additional training arguments now include:
+
+- `--gradient_accumulation_steps`: Number of steps to accumulate gradients (default is 1)
+- `--mixed_precision`: Enable mixed precision training (default is False)
+- `--distributed`: Enable distributed training (default is False)
+- `--num_workers`: Number of data loading workers (default is 4)
+- `--weight_decay`: Weight decay for optimizer (default is 0.01)
+- `--warmup_steps`: Number of warmup steps for learning rate scheduler
+- `--max_grad_norm`: Maximum gradient norm for clipping
+
+#### Example Command with Advanced Options
+
+```bash
+./scripts/train.sh \
+    --mixed_precision true \
+    --gradient_accumulation_steps 4 \
+    --distributed true \
+    --num_workers 8 \
+    --warmup_steps 1000
+```
+
+## Model Export and Optimization
+
+To optimize the model for production deployment, use the following scripts:
+
+```bash
+# Export to ONNX
+python scripts/export_onnx.py --model_path checkpoints/model.pt --output_path model.onnx
+
+# Quantize model
+python scripts/quantize.py --model_path checkpoints/model.pt --output_path model_quantized.pt
+
+# Benchmark inference
+python scripts/benchmark.py --model_path model.onnx
+```
 
 An example of using the model in a market-making system is presented in the repository - https://github.com/Kaizer1917/Market_maker_ssm_hippo
