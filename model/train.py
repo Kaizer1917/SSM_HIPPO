@@ -36,7 +36,20 @@ def get_scheduler(optimizer, model_args, train_loader):
     
     return scheduler
 
-def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_available() else "cpu"):
+def train(model_args, train_loader, test_loader, device="cuda"):
+    # Enable AMP (Automatic Mixed Precision)
+    scaler = torch.cuda.amp.GradScaler()
+    
+    # Optimize dataloaders
+    train_loader = DataLoader(
+        train_loader.dataset,
+        batch_size=model_args.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+    
     wandb.init(project=model_args.project_name)
     wandb.config.update(vars(model_args))
 
@@ -80,15 +93,17 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
             optimizer.zero_grad()
             
             # Apply dynamic HiPPO transition scaling
-            output = ssm_model(X_batch, epoch/model_args.num_epochs)
-            loss = criterion(output, y_batch)
-            loss.backward()
-
-            # Gradient Clipping with dynamic threshold
-            max_norm = 1.0 * (0.9 ** (epoch // 10))  # Reduce clipping threshold over time
-            torch.nn.utils.clip_grad_norm_(ssm_model.parameters(), max_norm=max_norm)
+            with torch.cuda.amp.autocast():
+                output = ssm_model(X_batch, epoch/model_args.num_epochs)
+                loss = criterion(output, y_batch)
             
-            optimizer.step()
+            # Use gradient scaling
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(ssm_model.parameters(), max_norm=1.0 * (0.9 ** (epoch // 10)))
+            scaler.step(optimizer)
+            scaler.update()
+            
             scheduler.step()
             
             running_loss += loss.item()
@@ -99,7 +114,7 @@ def train(model_args, train_loader, test_loader, device="cuda" if torch.cuda.is_
                     "learning_rate": scheduler.get_last_lr()[0],
                     "epoch": epoch + 1,
                     "step": i + 1,
-                    "gradient_norm": max_norm
+                    "gradient_norm": 1.0 * (0.9 ** (epoch // 10))
                 })
 
         # Validation phase
