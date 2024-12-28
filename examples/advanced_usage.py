@@ -42,6 +42,8 @@ import time
 from sklearn.model_selection import ParameterGrid
 from sklearn.model_selection import KFold
 from model.ensemble_data import TimeSeriesEnsembleData
+from model.mamba_power_distributor import PowerDistributor, create_power_managed_executor
+from model.mamba_tvm_utils import optimize_ssm_hippo_hardware
 
 class AdvancedSSMHiPPO:
     def __init__(self, config):
@@ -132,6 +134,27 @@ class AdvancedSSMHiPPO:
             jitter_std=config.get('jitter_std', 0.03),
             max_segments=config.get('max_segments', 5)
         )
+
+        # Add power management components
+        self.power_distributor = PowerDistributor(
+            total_memory=config.get('total_memory', None),
+            power_budget=config.get('power_budget', None),
+            num_threads=config.get('num_threads', None)
+        )
+        
+        # Create power-managed forward pass
+        self.power_managed_forward = create_power_managed_executor(
+            self.model, 
+            device_type=self.device
+        )
+        
+        # Hardware optimization
+        if config.get('optimize_hardware', True):
+            self.lib, self.memory_pool = optimize_ssm_hippo_hardware(
+                self.model,
+                input_shape=(config['batch_size'], config['num_channels'], config['seq_len']),
+                device_type=self.device
+            )
 
     @staticmethod
     def get_memory_usage():
@@ -447,6 +470,20 @@ class AdvancedSSMHiPPO:
             num_augmentations=self.config.get('num_augmentations', 3)
         )
 
+    def forward(self, x, training_progress=0.0):
+        """Enhanced forward pass with power management"""
+        # Monitor power usage
+        current_power = self.power_distributor.monitor_power_usage()
+        
+        # Use power-managed forward pass
+        with self.memory_pool:
+            output = self.power_managed_forward(x, training_progress)
+            
+        # Adjust power distribution based on usage
+        self.power_distributor.adjust_power_distribution(current_power)
+        
+        return output
+
 class ParallelSSMEnsemble:
     def __init__(self, base_config: Dict, num_models: int = 3):
         self.num_models = num_models
@@ -531,7 +568,16 @@ class ParallelSSMEnsemble:
         return mean_pred, std_pred
 
 def advanced_example():
-    """Optimized example usage"""
+    """Optimized example usage with power management"""
+    # Add power management configuration
+    config.update({
+        'power_budget': 150.0,  # Watts
+        'total_memory': None,   # Auto-detect
+        'num_threads': None,    # Auto-detect
+        'optimize_hardware': True,
+        'device_type': 'cuda' if torch.cuda.is_available() else 'cpu'
+    })
+    
     # Configuration with TVM options
     config = {
         'd_model': 128,
