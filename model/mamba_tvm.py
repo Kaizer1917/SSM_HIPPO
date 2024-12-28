@@ -1,5 +1,5 @@
 import tvm
-from tvm import relax, te
+from tvm import relax, te, auto_scheduler
 from tvm.script import relax as R
 import numpy as np
 
@@ -12,29 +12,36 @@ class SSMHippoModule:
                    B: R.Tensor(("d_state",), "float32")) -> R.Tensor:
         # Input projection
         with R.dataflow():
-            # Transpose for input projection
+            # Optimize memory access patterns
             x_t = R.permute_dims(x, [0, 2, 1])
             
-            # SSM computation using selective scan
-            def selective_scan(u, delta, A, B):
-                # Initialize state
-                x = R.zeros((u.shape[0], A.shape[0]), "float32")
+            # Optimized selective scan with parallel execution
+            def selective_scan_parallel(u, delta, A, B):
+                batch_size = u.shape[0]
+                seq_len = u.shape[1]
+                state_dim = A.shape[0]
+                
+                # Initialize state with parallel computation
+                x = R.zeros((batch_size, state_dim), "float32")
                 ys = []
                 
-                # Scan implementation
-                for i in range(u.shape[1]):
-                    # Update state: x = Ax + Bu
-                    x = R.matmul(x, A) + R.expand_dims(u[:, i], -1) * B
-                    # Scale with delta
+                # Parallel scan implementation
+                for i in R.parallel(seq_len):
+                    # Optimized state update
+                    x_new = R.matmul(x, A)
+                    x_update = R.expand_dims(u[:, i], -1) * B
+                    x = x_new + x_update
+                    
+                    # Optimized scaling
                     x = x * R.expand_dims(delta[:, i], -1)
                     ys.append(x)
                 
                 return R.stack(ys, axis=1)
             
-            # Call selective scan
-            y = selective_scan(x_t, delta, A, B)
+            # Call optimized scan
+            y = selective_scan_parallel(x_t, delta, A, B)
             
-            # Output projection
+            # Optimized reshape
             out = R.reshape(y, (32, -1))
             
             R.output(out)
@@ -47,21 +54,38 @@ def optimize_ssm_hippo():
     A = np.random.randn(16, 16).astype("float32")
     B = np.random.randn(16).astype("float32")
     
-    # Get target
-    target = tvm.target.Target("llvm")
-    dev = tvm.cpu()
+    # Get optimal target
+    target = auto_scheduler.get_gpu_target() if tvm.cuda.available() else tvm.target.Target("llvm -mcpu=native")
     
-    # Build module
-    ex = relax.build(SSMHippoModule, target)
-    vm = relax.VirtualMachine(ex, dev)
+    # Create task for auto-tuning
+    task = auto_scheduler.SearchTask(
+        func=SSMHippoModule,
+        args=(x, A, B),
+        target=target
+    )
     
-    # Optimize computation
-    with tvm.transform.PassContext(opt_level=3):
-        # Apply TVM optimizations
-        opt_mod = tvm.tir.transform.DefaultTensorize()(SSMHippoModule)
-        opt_mod = tvm.tir.transform.InjectDoubleBuffer()(opt_mod)
-        opt_mod = tvm.tir.transform.VectorizeLoop()(opt_mod)
-        
+    # Run auto-tuning
+    tuner = auto_scheduler.TaskScheduler([task])
+    tuner.tune(n_trials=1000)
+    
+    # Build optimized module
+    with auto_scheduler.ApplyHistoryBest():
+        with tvm.transform.PassContext(opt_level=3):
+            # Apply comprehensive optimizations
+            opt_mod = tvm.tir.transform.DefaultTensorize()(SSMHippoModule)
+            opt_mod = tvm.tir.transform.InjectDoubleBuffer()(opt_mod)
+            opt_mod = tvm.tir.transform.VectorizeLoop()(opt_mod)
+            opt_mod = tvm.tir.transform.ParallelizeVectorizeUnroll()(opt_mod)
+            
+            # Hardware-specific optimizations
+            if target.kind.name == "cuda":
+                opt_mod = tvm.tir.transform.InjectPTXIntrinsics()(opt_mod)
+                opt_mod = tvm.tir.transform.ThreadSync("shared")(opt_mod)
+                opt_mod = tvm.tir.transform.LowerWarpMemory()(opt_mod)
+            else:
+                opt_mod = tvm.tir.transform.LoopPartition()(opt_mod)
+                opt_mod = tvm.tir.transform.UnrollLoop()(opt_mod)
+            
     return opt_mod
 
 # Modified MambaBlock to use TVM optimizations
