@@ -87,7 +87,6 @@ def evaluate_on_tslib_datasets():
     
     return results_df
 
-# Example results based on actual evaluations:
 """
 Results on Time Series Library datasets:
 Dataset      MAE    MSE     RMSE    R2     NRMSE   MAPE
@@ -96,11 +95,3 @@ ETTh2        0.401  0.271   0.521   0.878  0.081   9.12
 ETTm1        0.356  0.218   0.467   0.901  0.069   7.89
 electricity  0.412  0.289   0.538   0.865  0.085   9.78
 weather      0.395  0.262   0.512   0.883  0.079   8.92
-
-Key findings:
-1. Strong performance across diverse datasets with R2 scores consistently above 0.85
-2. Low normalized RMSE values (< 0.09) indicating good prediction accuracy
-3. MAPE values under 10% showing reliable percentage accuracy
-4. Best performance on ETTm1 dataset with lowest error metrics
-5. Slightly higher errors on electricity dataset due to its larger dimensionality
-""" 
