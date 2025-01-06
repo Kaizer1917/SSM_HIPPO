@@ -119,7 +119,7 @@ class AdvancedSSMHiPPO:
             dist.init_process_group(backend='nccl')
             self.model = DDP(self.model, device_ids=[self.local_rank])
 
-        
+        # Use automatic mixed precision context
         self.amp_context = (
             amp.autocast(device_type='cuda', dtype=torch.float16)
             if torch.cuda.is_available()
