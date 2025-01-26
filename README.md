@@ -40,7 +40,6 @@ To use this model, you need to have the following libraries installed:
 - `scikit-learn`
 - `matplotlib`
 - `wandb`
-- `catboost`
 -  `tvm (optional)`
 
 You can install them using pip:
