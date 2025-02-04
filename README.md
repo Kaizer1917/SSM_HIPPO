@@ -1,5 +1,5 @@
 # SSM_HIPPO
-
+The paper is available at: https://www.academia.edu/127462797/HIPPO_SSM_CHANNEL_CORRELATION_ENHANCED_STATE_SPACE_MODELS_FOR_MULTIVARIATE_TIME_SE_RIES_FORECASTING
 ## Features
 
 - **Channel Mixup**: A data augmentation technique to enhance the robustness of the model.
